@@ -139,8 +139,26 @@ try {
         $icon64.Dispose()
     }
 
-    $minimap64 = New-ResizedBitmap -SourceImage $logoImg -Width 64 -Height 64
+    # Crop central 56% square of Logo.png (inner glowing world-layers emblem) for crisp minimap fitting
+    $cropSize = [int]([Math]::Round([Math]::Min($logoImg.Width, $logoImg.Height) * 0.56))
+    $cropX = [int](($logoImg.Width - $cropSize) / 2)
+    $cropY = [int](($logoImg.Height - $cropSize) / 2)
+    $minimap64 = New-Object System.Drawing.Bitmap(64, 64, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
+        $mg = [System.Drawing.Graphics]::FromImage($minimap64)
+        try {
+            $mg.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+            $mg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+            $mg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $mg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+            $mg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $srcRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $cropSize, $cropSize)
+            $dstRect = New-Object System.Drawing.Rectangle(0, 0, 64, 64)
+            $mg.DrawImage($logoImg, $dstRect, $srcRect, [System.Drawing.GraphicsUnit]::Pixel)
+        }
+        finally {
+            $mg.Dispose()
+        }
         $cx = 31.5
         $cy = 31.5
         $radius = 30.0

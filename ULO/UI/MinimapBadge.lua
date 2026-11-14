@@ -22,7 +22,8 @@ local C = ULO.Constants
 -- Constants
 local DEFAULT_ANGLE = 225
 local MINIMAP_RADIUS = 80
-local BADGE_SIZE = 32
+local MINIMAP_OFFSET = 5
+local BADGE_SIZE = 31
 
 -- Runtime State
 local badgeText = "-"
@@ -36,47 +37,100 @@ if not badgeFrame and type(_G.CreateFrame) == "function" then
 end
 
 -- Child Visual Elements
+local badgeBg = nil
 local badgeIcon = nil
 local badgeBorder = nil
 local badgeTextFS = nil
 
 if badgeFrame then
     badgeFrame:SetSize(BADGE_SIZE, BADGE_SIZE)
+    if type(badgeFrame.SetFrameStrata) == "function" then
+        badgeFrame:SetFrameStrata("MEDIUM")
+    end
+    if type(badgeFrame.SetFrameLevel) == "function" then
+        badgeFrame:SetFrameLevel(8)
+    end
     if type(badgeFrame.SetMovable) == "function" then
         badgeFrame:SetMovable(true)
     end
     if type(badgeFrame.EnableMouse) == "function" then
         badgeFrame:EnableMouse(true)
     end
+    if type(badgeFrame.RegisterForClicks) == "function" then
+        badgeFrame:RegisterForClicks("anyUp")
+    end
     if type(badgeFrame.RegisterForDrag) == "function" then
         badgeFrame:RegisterForDrag("LeftButton")
     end
+    if type(badgeFrame.SetHighlightTexture) == "function" then
+        badgeFrame:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    end
 
-    -- Background medallion texture
+    local isMainlineLayout = (_G.WOW_PROJECT_ID ~= nil and _G.WOW_PROJECT_MAINLINE ~= nil and _G.WOW_PROJECT_ID == _G.WOW_PROJECT_MAINLINE)
+
+    -- LibDBIcon-1.0 compatible minimap button geometry (background, artwork icon, tracking border overlay)
     if type(badgeFrame.CreateTexture) == "function" then
-        badgeIcon = badgeFrame:CreateTexture(nil, "BACKGROUND")
-        if badgeIcon and type(badgeIcon.SetTexture) == "function" then
-            if type(badgeIcon.SetAllPoints) == "function" then
-                badgeIcon:SetAllPoints(badgeFrame)
+        badgeBg = badgeFrame:CreateTexture(nil, "BACKGROUND")
+        if badgeBg then
+            if type(badgeBg.SetTexture) == "function" then
+                badgeBg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
             end
-            badgeIcon:SetTexture("Interface\\AddOns\\ULO\\Media\\ULOMinimap")
+            if isMainlineLayout then
+                if type(badgeBg.SetSize) == "function" then badgeBg:SetSize(24, 24) end
+                if type(badgeBg.SetPoint) == "function" then badgeBg:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0) end
+            else
+                if type(badgeBg.SetSize) == "function" then badgeBg:SetSize(20, 20) end
+                if type(badgeBg.SetPoint) == "function" then badgeBg:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -5) end
+            end
+        end
+
+        badgeIcon = badgeFrame:CreateTexture(nil, "ARTWORK")
+        if badgeIcon then
+            if type(badgeIcon.SetTexture) == "function" then
+                badgeIcon:SetTexture("Interface\\AddOns\\ULO\\Media\\ULOMinimap")
+            end
+            if type(badgeIcon.SetTexCoord) == "function" then
+                badgeIcon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+            end
+            if isMainlineLayout then
+                if type(badgeIcon.SetSize) == "function" then badgeIcon:SetSize(20, 20) end
+                if type(badgeIcon.SetPoint) == "function" then badgeIcon:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0) end
+            else
+                if type(badgeIcon.SetSize) == "function" then badgeIcon:SetSize(18, 18) end
+                if type(badgeIcon.SetPoint) == "function" then badgeIcon:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -6) end
+            end
         end
 
         -- Border overlay texture
         badgeBorder = badgeFrame:CreateTexture(nil, "OVERLAY")
-        if badgeBorder and type(badgeBorder.SetTexture) == "function" then
-            if type(badgeBorder.SetAllPoints) == "function" then
-                badgeBorder:SetAllPoints(badgeFrame)
+        if badgeBorder then
+            if type(badgeBorder.SetTexture) == "function" then
+                badgeBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
             end
-            badgeBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+            if isMainlineLayout then
+                if type(badgeBorder.SetSize) == "function" then badgeBorder:SetSize(50, 50) end
+            else
+                if type(badgeBorder.SetSize) == "function" then badgeBorder:SetSize(53, 53) end
+            end
+            if type(badgeBorder.SetPoint) == "function" then
+                badgeBorder:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 0, 0)
+            end
         end
     end
 
     -- Layer text font string
     if type(badgeFrame.CreateFontString) == "function" then
-        badgeTextFS = badgeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        if badgeTextFS and type(badgeTextFS.SetPoint) == "function" then
-            badgeTextFS:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0)
+        badgeTextFS = badgeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        if badgeTextFS then
+            if type(badgeTextFS.GetFont) == "function" and type(badgeTextFS.SetFont) == "function" then
+                local fontPath, fontSize = badgeTextFS:GetFont()
+                if fontPath and fontSize then
+                    badgeTextFS:SetFont(fontPath, fontSize, "OUTLINE")
+                end
+            end
+            if type(badgeTextFS.SetPoint) == "function" then
+                badgeTextFS:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0)
+            end
             if type(badgeTextFS.SetText) == "function" then
                 badgeTextFS:SetText("-")
             end
@@ -125,9 +179,20 @@ function Badge.SetPosition(angle)
 
     if badgeFrame and type(badgeFrame.SetPoint) == "function" then
         local parent = (type(badgeFrame.GetParent) == "function" and badgeFrame:GetParent()) or _G.Minimap or _G.UIParent
+        local radiusW = MINIMAP_RADIUS
+        local radiusH = MINIMAP_RADIUS
+        local mm = _G.Minimap or parent
+        if mm and type(mm.GetWidth) == "function" and type(mm.GetHeight) == "function" then
+            local okW, mw = pcall(mm.GetWidth, mm)
+            local okH, mh = pcall(mm.GetHeight, mm)
+            if okW and okH and type(mw) == "number" and type(mh) == "number" and mw > 0 and mh > 0 then
+                radiusW = (mw / 2) + MINIMAP_OFFSET
+                radiusH = (mh / 2) + MINIMAP_OFFSET
+            end
+        end
         local rad = math.rad(sanitized)
-        local cx = math.cos(rad) * MINIMAP_RADIUS
-        local cy = math.sin(rad) * MINIMAP_RADIUS
+        local cx = math.cos(rad) * radiusW
+        local cy = math.sin(rad) * radiusH
         if type(badgeFrame.ClearAllPoints) == "function" then
             badgeFrame:ClearAllPoints()
         end

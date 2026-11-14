@@ -329,6 +329,8 @@ local function OnEvent(self, event, arg1, ...)
         Detection.ScanUnit("mouseover")
     elseif event == "PLAYER_FOCUS_CHANGED" then
         Detection.ScanUnit("focus")
+    elseif event == "UNIT_TARGET" then
+        if arg1 then Detection.ScanUnit(tostring(arg1) .. "target") end
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         if arg1 then Detection.ScanUnit(arg1) end
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
@@ -358,8 +360,20 @@ if type(_G.CreateFrame) == "function" then
     f:RegisterEvent("PLAYER_TARGET_CHANGED")
     f:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
     f:RegisterEvent("PLAYER_FOCUS_CHANGED")
+    f:RegisterEvent("UNIT_TARGET")
     f:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-    f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+
+    local toc = (Compat and type(Compat.GetTocVersion) == "function" and Compat.GetTocVersion()) or 0
+    local isRestrictedClient = not _G.__harness and (
+        _G.C_Secrets ~= nil
+        or _G.GetAddOnRestrictionState ~= nil
+        or (toc >= 16000 and toc < 20000)
+        or toc >= 120000
+    )
+    if not isRestrictedClient then
+        f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+    end
+
     f:SetScript("OnEvent", OnEvent)
     Detection.eventFrame = f
 end
