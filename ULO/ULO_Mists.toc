@@ -2,7 +2,7 @@
 ## Title: |cff00ccffULO|r - Universal Layer Operator [|cff00ff00Mists Classic|r]
 ## Notes: Multi-release layer detection, refresh monitoring, automated hopping, and cross-addon coordination for Mists of Pandaria Classic.
 ## Author: Bl4ut0
-## Version: 1.0.0
+## Version: Dev
 ## IconTexture: Interface\AddOns\ULO\Media\ULOIcon
 ## SavedVariables: ULO_DB, ULO_CONFIG, ULO_CHAR_DB, ULODB
 ## SavedVariablesPerCharacter: ULO_CHAR_DB
