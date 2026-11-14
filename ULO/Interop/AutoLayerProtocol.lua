@@ -61,6 +61,9 @@ function AutoLayer.JoinChannels()
         pcall(_G.JoinChannelByName, "layer")
         pcall(_G.JoinChannelByName, todayChannel)
     end
+    if type(ULO.LogAction) == "function" then
+        ULO.LogAction("Channel", "Joined /layer and /" .. tostring(todayChannel))
+    end
     return todayChannel
 end
 
@@ -192,7 +195,9 @@ end
 function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
     mapID = mapID or (type(_G.C_Map) == "table" and _G.C_Map.GetBestMapForUnit and _G.C_Map.GetBestMapForUnit("player")) or 947
     local seg = "AZ"
-    if mapID == 1945 then
+    if _G.ULODB and _G.ULODB.uloOnlyMode == true then
+        seg = "ULO"
+    elseif mapID == 1945 then
         seg = "OL"
     elseif C and C.AUTOLAYER and C.AUTOLAYER.SEGMENT_MAPS and C.AUTOLAYER.SEGMENT_MAPS[mapID] then
         seg = C.AUTOLAYER.SEGMENT_MAPS[mapID]
@@ -211,8 +216,8 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
             formatted = string.format("<%s> inv layer", seg)
         end
     end
+    local chId = 0
     if type(_G.SendChatMessage) == "function" then
-        local chId = 0
         if type(_G.GetChannelName) == "function" then
             local todayCh = AutoLayer.GenerateChannelName()
             local ok1, id1 = pcall(_G.GetChannelName, todayCh)
@@ -234,6 +239,14 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
         end
         if chId > 0 then
             pcall(_G.SendChatMessage, formatted, "CHANNEL", nil, chId)
+        end
+    end
+    if type(ULO.LogAction) == "function" then
+        local tag = (seg == "ULO") and "ULO Chan" or "AutoLayer"
+        if chId > 0 then
+            ULO.LogAction(tag, string.format("Sent %q on /%d", formatted, chId))
+        else
+            ULO.LogAction(tag, string.format("Prepared %q (no channel slot)", formatted))
         end
     end
     return formatted
@@ -261,10 +274,6 @@ if type(_G.CreateFrame) == "function" then
                     AutoLayer.LeaveExcessChannels()
                 end
             elseif event == "CHAT_MSG_CHANNEL" then
-                if (_G.ULODB and _G.ULODB.autoLayerEnabled == false)
-                   or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false) then
-                    return
-                end
                 local msg, sender, _, channelName, _, _, _, _, channelBaseName = ...
                 if type(msg) ~= "string" or type(sender) ~= "string" or sender == "" then
                     return
@@ -281,13 +290,23 @@ if type(_G.CreateFrame) == "function" then
                     return
                 end
 
+                local isULOMsg = string.match(msg, "^%s*<ULO>%s*inv") ~= nil
+                local sourceTag = isULOMsg and "ULO Chan" or "AutoLayer"
+                if not isULOMsg and ((_G.ULODB and (_G.ULODB.autoLayerEnabled == false or _G.ULODB.uloOnlyMode == true))
+                   or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false)) then
+                    if type(ULO.LogAction) == "function" then
+                        ULO.LogAction("Blocked", "Ignored AutoLayer channel req from " .. tostring(sender))
+                    end
+                    return
+                end
+
                 local seg, targetLayer = AutoLayer.ParseMessage(msg)
                 if seg and targetLayer then
                     local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
                         and ULO.Detection.GetCurrentLayer() or nil
                     if (myLayer == nil or myLayer == targetLayer)
                         and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                        ULO.Coordination.HandleWhisper(sender, string.format("inv layer %d", targetLayer))
+                        ULO.Coordination.HandleWhisper(sender, string.format("inv layer %d", targetLayer), sourceTag)
                     end
                 else
                     local invSeg, exLayer = string.match(msg, "^%s*<([A-Z0-9_]+)>%s*inv%s+not%s+layer%s+(%d+)%s*$")
@@ -297,11 +316,11 @@ if type(_G.CreateFrame) == "function" then
                             and ULO.Detection.GetCurrentLayer() or nil
                         if (myLayer == nil or myLayer ~= tonumber(exLayer))
                             and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                            ULO.Coordination.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)))
+                            ULO.Coordination.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)), sourceTag)
                         end
                     elseif anySeg then
                         if ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                            ULO.Coordination.HandleWhisper(sender, "inv layer")
+                            ULO.Coordination.HandleWhisper(sender, "inv layer", sourceTag)
                         end
                     end
                 end

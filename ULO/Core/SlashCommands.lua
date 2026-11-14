@@ -54,7 +54,7 @@ function ULO.HandleSlashCommand(rawMsg)
         arg1 = arg1 and (string.match(arg1, "^%s*(.-)%s*$") or "") or ""
 
         if cmd == "help" then
-            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo ui, /ulo invite, /ulo status, /ulo config, /layer <num>")
+            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo ui, /ulo actions, /ulo only, /ulo invite, /ulo status, /ulo config, /layer <num>")
         elseif cmd == "ui" or cmd == "hud" or cmd == "show" then
             if ULO.UI and ULO.UI.StatusHUD then
                 if type(ULO.UI.StatusHUD.ResetPosition) == "function" then
@@ -62,6 +62,16 @@ function ULO.HandleSlashCommand(rawMsg)
                 elseif type(ULO.UI.StatusHUD.Toggle) == "function" then
                     ULO.UI.StatusHUD.Toggle()
                 end
+            end
+        elseif cmd == "actions" or cmd == "log" then
+            if ULO.UI and ULO.UI.ActionsHUD and type(ULO.UI.ActionsHUD.Toggle) == "function" then
+                ULO.UI.ActionsHUD.Toggle()
+            end
+        elseif cmd == "only" or cmd == "mode" then
+            if type(ULO.SetULOOnlyMode) == "function" and type(ULO.IsULOOnlyMode) == "function" then
+                local nextMode = not ULO.IsULOOnlyMode()
+                ULO.SetULOOnlyMode(nextMode)
+                OutputChat(nextMode and "Mode: ULO ONLY (AutoLayer & Overlord invites ignored)" or "Mode: ALL ADDONS (AutoLayer & Overlord enabled)")
             end
         elseif cmd == "invite" or cmd == "toggle" then
             local argLower = string.lower(arg1 or "")

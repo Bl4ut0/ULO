@@ -32,7 +32,14 @@ local hopTimeoutTimer = nil
 function Coordination.RequestLayerHop(targetLayer, preferredProtocol)
     -- Guard: Active hop cooldown lockout
     if ULO.Monitor and type(ULO.Monitor.GetCooldownRemaining) == "function" and ULO.Monitor.GetCooldownRemaining() > 0 then
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction("Hop", "Blocked by cooldown (" .. tostring(ULO.Monitor.GetCooldownRemaining()) .. "s)")
+        end
         return false, "cooldown"
+    end
+
+    if type(ULO.LogAction) == "function" then
+        ULO.LogAction("Hop", targetLayer and ("Requesting hop to Layer " .. tostring(targetLayer)) or "Requesting hop to ANY available layer")
     end
 
     local now = (type(_G.GetTime) == "function" and _G.GetTime()) or 0
@@ -202,6 +209,16 @@ if type(_G.CreateFrame) == "function" then
                     pcall(_G.AcceptGroup)
                 end
                 awaitingLayerVerification = true
+                local shortSender = type(sender) == "string" and string.lower(string.match(sender, "^([^%-]+)") or sender) or ""
+                local viaSystem = "AutoLayer / Channel"
+                if ULO.Interop and ULO.Interop.Overlord and ULO.Interop.Overlord.lastWhisperedPeers and ULO.Interop.Overlord.lastWhisperedPeers[shortSender] then
+                    viaSystem = "OverlordLJ Whisper"
+                elseif _G.ULODB and _G.ULODB.uloOnlyMode == true then
+                    viaSystem = "ULO Native"
+                end
+                if type(ULO.LogAction) == "function" then
+                    ULO.LogAction("Group", string.format("Accepted hop invite from %s [via %s]", tostring(sender or "helper"), viaSystem))
+                end
             else
                 -- Non-hop invite: leave untouched so normal social invites behave naturally
             end
@@ -235,6 +252,9 @@ end
 if type(ULO.RegisterCallback) == "function" then
     ULO.RegisterCallback("OnLayerChanged", function(newLayer)
         if awaitingLayerVerification and (not awaitingHopTarget or newLayer == awaitingHopTarget) then
+            if type(ULO.LogAction) == "function" then
+                ULO.LogAction("Group", "Verified Layer " .. tostring(newLayer) .. " -> leaving helper party")
+            end
             local ok, reason = Coordination.DepartGroup()
             if ok then
                 Coordination.ResetHopState()

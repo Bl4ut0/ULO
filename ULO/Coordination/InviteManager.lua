@@ -94,9 +94,11 @@ end
 --- Evaluates an incoming whisper and dispatches a party invitation if eligible.
 -- @param sender string: Whispering player name
 -- @param msg string: Whisper text
+-- @param source string|nil: Originating system tag (defaults to "Direct Whisper")
 -- @return boolean: true if invite successfully dispatched
 -- @return string|nil: Error or rejection reason
-function Coordination.HandleWhisper(sender, msg)
+function Coordination.HandleWhisper(sender, msg, source)
+    source = source or "Direct Whisper"
     -- Guard 1: Auto-invite globally disabled
     if not autoInviteEnabled then
         return false, "disabled"
@@ -156,6 +158,9 @@ function Coordination.HandleWhisper(sender, msg)
 
     if ok then
         Coordination.EnrollPlayerInCache(sender, 300)
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction(source, string.format("Auto-invited %s (%s)", tostring(sender), tostring(msg)))
+        end
         return true
     end
 

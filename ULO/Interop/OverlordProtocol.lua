@@ -19,6 +19,7 @@ local Compat = ULO.Compat
 
 local PREFIX = (C and C.OVERLORD and C.OVERLORD.PREFIX) or "OverlordLJ"
 local failedRequests = {}
+Overlord.lastWhisperedPeers = Overlord.lastWhisperedPeers or {}
 
 --- Initializes and registers the OverlordLJ addon message prefix.
 function Overlord.Init()
@@ -50,12 +51,19 @@ function Overlord.ProcessMessage(msg, sender)
             return false
         end
 
+        local function Decline(reason)
+            if type(ULO.LogAction) == "function" then
+                ULO.LogAction("Overlord", string.format("Declined %s (%s)", tostring(sender), tostring(reason)))
+            end
+            Overlord.SendDecline(sender, reqId, reason)
+            return true
+        end
+
         -- 1. Check if auto-invites are enabled
         local Coordination = ULO.Coordination
         if Coordination and type(Coordination.IsAutoInviteEnabled) == "function" then
             if not Coordination.IsAutoInviteEnabled() then
-                Overlord.SendDecline(sender, reqId, "off")
-                return true
+                return Decline("off")
             end
         end
 
@@ -63,8 +71,7 @@ function Overlord.ProcessMessage(msg, sender)
         if type(_G.IsInInstance) == "function" then
             local inInstance = _G.IsInInstance()
             if inInstance then
-                Overlord.SendDecline(sender, reqId, "instance")
-                return true
+                return Decline("instance")
             end
         end
 
@@ -72,8 +79,7 @@ function Overlord.ProcessMessage(msg, sender)
         local inCombat = (type(_G.UnitAffectingCombat) == "function" and _G.UnitAffectingCombat("player"))
                          or (type(_G.InCombatLockdown) == "function" and _G.InCombatLockdown())
         if inCombat then
-            Overlord.SendDecline(sender, reqId, "combat")
-            return true
+            return Decline("combat")
         end
 
         -- 4. Check if party/raid is full (capacity >= 5 for party, >= 40 for raid)
@@ -83,17 +89,16 @@ function Overlord.ProcessMessage(msg, sender)
         local inRaid = (type(_G.IsInRaid) == "function" and _G.IsInRaid())
         local maxMembers = inRaid and 40 or 5
         if numMembers >= maxMembers then
-            Overlord.SendDecline(sender, reqId, "full")
-            return true
+            return Decline("full")
         end
 
-        -- 5. Check if requester is already on the host's layer
+        -- 5. Check if requester is already on the host's layer/shard
         if layerNum then
             local Detection = ULO.Detection
             local myLayer = (Detection and type(Detection.GetCurrentLayer) == "function" and Detection.GetCurrentLayer())
-            if myLayer and myLayer == layerNum then
-                Overlord.SendDecline(sender, reqId, "same")
-                return true
+            local myServerId = (Detection and type(Detection.GetCurrentServerId) == "function" and Detection.GetCurrentServerId())
+            if (myLayer and myLayer == layerNum) or (myServerId and myServerId == layerNum) then
+                return Decline("same")
             end
         end
 
@@ -108,6 +113,9 @@ function Overlord.ProcessMessage(msg, sender)
         if inviteOk and Coordination and type(Coordination.EnrollPlayerInCache) == "function" then
             Coordination.EnrollPlayerInCache(sender, 300)
         end
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction("Overlord", string.format("Rx OverlordLJ req from %s -> %s", tostring(sender), inviteOk and "Invited" or "Invite failed"))
+        end
 
         return true
     end
@@ -119,6 +127,9 @@ function Overlord.ProcessMessage(msg, sender)
         local numId = tonumber(dReqId)
         if numId then
             failedRequests[numId] = reason
+        end
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction("Overlord", string.format("Peer %s declined (%s): %s", tostring(sender), tostring(dReqId), tostring(reason)))
         end
         return true
     end
@@ -136,6 +147,11 @@ function Overlord.SendHopRequest(targetPlayer, targetLayer, reqId)
     local layerStr = (targetLayer ~= nil and targetLayer ~= "") and tostring(targetLayer) or "-"
     local payload = string.format("R:2:%s:%s", tostring(reqId), layerStr)
 
+    if type(targetPlayer) == "string" and targetPlayer ~= "" then
+        local short = string.lower(string.match(targetPlayer, "^([^%-]+)") or targetPlayer)
+        Overlord.lastWhisperedPeers[short] = true
+    end
+
     if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.SendAddonMessage) == "function" then
         pcall(_G.C_ChatInfo.SendAddonMessage, PREFIX, payload, "WHISPER", targetPlayer)
     elseif type(_G.SendAddonMessage) == "function" then
@@ -148,7 +164,7 @@ end
 -- @param targetLayer number|nil: Desired destination layer, or nil for any different layer
 -- @return number: Count of peer whisper requests dispatched
 function Overlord.BroadcastHopRequest(targetLayer)
-    if (_G.ULODB and _G.ULODB.overlordEnabled == false)
+    if (_G.ULODB and (_G.ULODB.overlordEnabled == false or _G.ULODB.uloOnlyMode == true))
        or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false) then
         return 0
     end
@@ -166,6 +182,15 @@ function Overlord.BroadcastHopRequest(targetLayer)
     local desiredLayer = tonumber(targetLayer)
     local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
         and ULO.Detection.GetCurrentLayer() or nil
+    local myServerId = ULO.Detection and type(ULO.Detection.GetCurrentServerId) == "function"
+        and ULO.Detection.GetCurrentServerId() or nil
+    local ovLayer = nil
+    if type(lj.MyLayer) == "function" then
+        local okOv, ovId = pcall(lj.MyLayer, lj)
+        if okOv then
+            ovLayer = tonumber(ovId)
+        end
+    end
 
     local helpers, others = {}, {}
     for _, row in ipairs(peers) do
@@ -183,7 +208,10 @@ function Overlord.BroadcastHopRequest(targetLayer)
                 if desiredLayer then
                     eligible = (peerLayer == desiredLayer)
                 else
-                    eligible = (myLayer == nil) or (peerLayer ~= myLayer)
+                    local sameAsUs = (myLayer and peerLayer == myLayer)
+                                     or (myServerId and peerLayer == myServerId)
+                                     or (ovLayer and peerLayer == ovLayer)
+                    eligible = not sameAsUs
                 end
                 if eligible then
                     if row.helper then
@@ -210,8 +238,15 @@ function Overlord.BroadcastHopRequest(targetLayer)
     local baseTime = (type(_G.time) == "function" and _G.time()) or math.floor(((type(_G.GetTime) == "function" and _G.GetTime()) or 0) * 1000)
     for idx, row in ipairs(candidates) do
         local reqId = string.format("%x%d", baseTime % 65535, idx)
-        Overlord.SendHopRequest(row.name, myLayer or "-", reqId)
+        Overlord.SendHopRequest(row.name, myServerId or ovLayer or myLayer or "-", reqId)
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction("OverlordLJ", string.format("Whispered %s (Shard #%s)", tostring(row.name), tostring(row.layer or "?")))
+        end
         sent = sent + 1
+    end
+
+    if sent == 0 and type(ULO.LogAction) == "function" then
+        ULO.LogAction("OverlordLJ", "0 known Overlord peers on other layers")
     end
 
     return sent
@@ -245,8 +280,11 @@ if type(_G.CreateFrame) == "function" then
     overlordFrame:RegisterEvent("CHAT_MSG_ADDON")
     overlordFrame:SetScript("OnEvent", function(self, event, prefix, msg, channel, sender)
         if event == "CHAT_MSG_ADDON" and prefix == PREFIX then
-            if (_G.ULODB and _G.ULODB.overlordEnabled == false)
+            if (_G.ULODB and (_G.ULODB.overlordEnabled == false or _G.ULODB.uloOnlyMode == true))
                or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false) then
+                if type(ULO.LogAction) == "function" then
+                    ULO.LogAction("Blocked", "Ignored OverlordLJ req from " .. tostring(sender))
+                end
                 return
             end
             Overlord.ProcessMessage(msg, sender)
