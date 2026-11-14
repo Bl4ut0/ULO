@@ -249,6 +249,11 @@ end
 
 -- Coordination Subsystem Lifecycle
 function Coordination:Initialize()
+    if type(_G.ULODB) == "table" and _G.ULODB.autoInvite ~= nil then
+        Coordination.ToggleAutoInvite(_G.ULODB.autoInvite == true)
+    elseif type(_G.ULO_CONFIG) == "table" and type(_G.ULO_CONFIG.autoInvite) == "table" and _G.ULO_CONFIG.autoInvite.enabled ~= nil then
+        Coordination.ToggleAutoInvite(_G.ULO_CONFIG.autoInvite.enabled == true)
+    end
 end
 
 function Coordination:Enable()

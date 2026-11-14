@@ -23,7 +23,7 @@ local C = ULO.Constants
 local DEFAULT_ANGLE = 225
 local MINIMAP_RADIUS = 80
 local MINIMAP_OFFSET = 5
-local BADGE_SIZE = 31
+local BADGE_SIZE = 32
 
 -- Runtime State
 local badgeText = "-"
@@ -66,22 +66,15 @@ if badgeFrame then
         badgeFrame:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
     end
 
-    local isMainlineLayout = (_G.WOW_PROJECT_ID ~= nil and _G.WOW_PROJECT_MAINLINE ~= nil and _G.WOW_PROJECT_ID == _G.WOW_PROJECT_MAINLINE)
-
-    -- LibDBIcon-1.0 compatible minimap button geometry (background, artwork icon, tracking border overlay)
+    -- Overlord / Classic MiniMap-TrackingBorder minimap button geometry
     if type(badgeFrame.CreateTexture) == "function" then
         badgeBg = badgeFrame:CreateTexture(nil, "BACKGROUND")
         if badgeBg then
             if type(badgeBg.SetTexture) == "function" then
                 badgeBg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
             end
-            if isMainlineLayout then
-                if type(badgeBg.SetSize) == "function" then badgeBg:SetSize(24, 24) end
-                if type(badgeBg.SetPoint) == "function" then badgeBg:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0) end
-            else
-                if type(badgeBg.SetSize) == "function" then badgeBg:SetSize(20, 20) end
-                if type(badgeBg.SetPoint) == "function" then badgeBg:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -5) end
-            end
+            if type(badgeBg.SetSize) == "function" then badgeBg:SetSize(20, 20) end
+            if type(badgeBg.SetPoint) == "function" then badgeBg:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -5) end
         end
 
         badgeIcon = badgeFrame:CreateTexture(nil, "ARTWORK")
@@ -92,13 +85,8 @@ if badgeFrame then
             if type(badgeIcon.SetTexCoord) == "function" then
                 badgeIcon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
             end
-            if isMainlineLayout then
-                if type(badgeIcon.SetSize) == "function" then badgeIcon:SetSize(20, 20) end
-                if type(badgeIcon.SetPoint) == "function" then badgeIcon:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0) end
-            else
-                if type(badgeIcon.SetSize) == "function" then badgeIcon:SetSize(18, 18) end
-                if type(badgeIcon.SetPoint) == "function" then badgeIcon:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -6) end
-            end
+            if type(badgeIcon.SetSize) == "function" then badgeIcon:SetSize(20, 20) end
+            if type(badgeIcon.SetPoint) == "function" then badgeIcon:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 7, -5) end
         end
 
         -- Border overlay texture
@@ -107,11 +95,7 @@ if badgeFrame then
             if type(badgeBorder.SetTexture) == "function" then
                 badgeBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
             end
-            if isMainlineLayout then
-                if type(badgeBorder.SetSize) == "function" then badgeBorder:SetSize(50, 50) end
-            else
-                if type(badgeBorder.SetSize) == "function" then badgeBorder:SetSize(53, 53) end
-            end
+            if type(badgeBorder.SetSize) == "function" then badgeBorder:SetSize(53, 53) end
             if type(badgeBorder.SetPoint) == "function" then
                 badgeBorder:SetPoint("TOPLEFT", badgeFrame, "TOPLEFT", 0, 0)
             end
@@ -129,7 +113,7 @@ if badgeFrame then
                 end
             end
             if type(badgeTextFS.SetPoint) == "function" then
-                badgeTextFS:SetPoint("CENTER", badgeFrame, "CENTER", 0, 0)
+                badgeTextFS:SetPoint("CENTER", badgeIcon or badgeFrame, "CENTER", 0, 0)
             end
             if type(badgeTextFS.SetText) == "function" then
                 badgeTextFS:SetText("-")
@@ -315,6 +299,12 @@ function Badge.OnEnter(frame)
         end
     end
 
+    _G.GameTooltip:AddLine(" ")
+    _G.GameTooltip:AddLine("Left-Click: Toggle Layer Operator HUD")
+    _G.GameTooltip:AddLine("Right-Click: Open Settings")
+    _G.GameTooltip:AddLine("Shift-Left-Click: Scan Target / NPCs")
+    _G.GameTooltip:AddLine("Drag: Move around Minimap")
+
     if type(_G.GameTooltip.Show) == "function" then
         _G.GameTooltip:Show()
     end
@@ -334,13 +324,32 @@ function Badge.OnLeave(frame)
 end
 
 --- Click interaction handler.
--- Left click toggles Status HUD; Right click opens Blizzard Settings.
+-- Left click toggles Status HUD; Shift-left click scans units; Right click opens Blizzard Settings.
 -- @param frame table: Badge frame
 -- @param button string: "LeftButton" or "RightButton"
 function Badge.OnClick(frame, button)
     if button == "RightButton" then
         if ULO.UI and ULO.UI.SettingsPanel and ULO.UI.SettingsPanel.Open then
             ULO.UI.SettingsPanel.Open()
+        end
+    elseif type(_G.IsShiftKeyDown) == "function" and _G.IsShiftKeyDown() then
+        if ULO.Detection and type(ULO.Detection.ScanUnit) == "function" then
+            ULO.Detection.ScanUnit("target")
+            ULO.Detection.ScanUnit("mouseover")
+            ULO.Detection.ScanUnit("npc")
+            for i = 1, 10 do
+                ULO.Detection.ScanUnit("nameplate" .. i)
+            end
+        end
+        Badge.Update()
+        if ULO.UI and ULO.UI.StatusHUD and type(ULO.UI.StatusHUD.Update) == "function" then
+            ULO.UI.StatusHUD.Update()
+        end
+        local layer = ULO.Detection and ULO.Detection.GetCurrentLayer and ULO.Detection.GetCurrentLayer()
+        local conf = (ULO.Detection and ULO.Detection.GetLayerConfidence and ULO.Detection.GetLayerConfidence()) or "UNDETERMINED"
+        local msg = string.format("|cff00ccffULO:|r Scanned nearby units -> Layer: %s (%s)", tostring(layer or "?"), tostring(conf))
+        if _G.DEFAULT_CHAT_FRAME and type(_G.DEFAULT_CHAT_FRAME.AddMessage) == "function" then
+            _G.DEFAULT_CHAT_FRAME:AddMessage(msg)
         end
     else
         if ULO.UI and ULO.UI.StatusHUD and ULO.UI.StatusHUD.Toggle then
@@ -412,12 +421,10 @@ function Badge.IsDragging()
 end
 
 --- Handler for drag start event.
+-- Uses pure orbital positioning so the badge remains anchored to Minimap.
 -- @param frame table: Badge frame
 function Badge.OnDragStart(frame)
     isDragging = true
-    if frame and type(frame.StartMoving) == "function" then
-        frame:StartMoving()
-    end
     local angle = Badge.CalculateCursorAngle()
     if angle then
         Badge.SetPosition(angle)
@@ -440,9 +447,6 @@ end
 -- @param frame table: Badge frame
 function Badge.OnDragStop(frame)
     isDragging = false
-    if frame and type(frame.StopMovingOrSizing) == "function" then
-        frame:StopMovingOrSizing()
-    end
     local angle = Badge.CalculateCursorAngle()
     if angle then
         Badge.SavePosition(angle)
@@ -478,6 +482,21 @@ end
 if ULO.RegisterCallback then
     ULO.RegisterCallback("OnLayerChanged", function(layer, serverId, zoneId)
         Badge.Update()
+    end)
+end
+
+-- Reposition once Minimap finishes initial layout/resizing
+if _G.Minimap and type(_G.Minimap.HookScript) == "function" then
+    pcall(_G.Minimap.HookScript, _G.Minimap, "OnSizeChanged", function()
+        Badge.SetPosition(Badge.GetPosition())
+    end)
+    pcall(_G.Minimap.HookScript, _G.Minimap, "OnShow", function()
+        Badge.SetPosition(Badge.GetPosition())
+    end)
+end
+if type(_G.C_Timer) == "table" and type(_G.C_Timer.After) == "function" then
+    _G.C_Timer.After(0, function()
+        Badge.SetPosition(Badge.GetPosition())
     end)
 end
 

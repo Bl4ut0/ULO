@@ -54,7 +54,15 @@ function ULO.HandleSlashCommand(rawMsg)
         arg1 = arg1 and (string.match(arg1, "^%s*(.-)%s*$") or "") or ""
 
         if cmd == "help" then
-            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo invite, /ulo status, /layer <num>")
+            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo ui, /ulo invite, /ulo status, /ulo config, /layer <num>")
+        elseif cmd == "ui" or cmd == "hud" or cmd == "show" then
+            if ULO.UI and ULO.UI.StatusHUD then
+                if type(ULO.UI.StatusHUD.ResetPosition) == "function" then
+                    ULO.UI.StatusHUD.ResetPosition()
+                elseif type(ULO.UI.StatusHUD.Toggle) == "function" then
+                    ULO.UI.StatusHUD.Toggle()
+                end
+            end
         elseif cmd == "invite" or cmd == "toggle" then
             local argLower = string.lower(arg1 or "")
             if argLower == "off" then
@@ -122,6 +130,9 @@ function ULO.HandleSlashCommand(rawMsg)
             end
         elseif cmd == "" then
             OutputChat("Universal Layer Operator Status")
+            if ULO.UI and ULO.UI.StatusHUD and type(ULO.UI.StatusHUD.Toggle) == "function" then
+                ULO.UI.StatusHUD.Toggle()
+            end
         else
             OutputChat("Unknown command. Type /ulo help for commands.")
         end

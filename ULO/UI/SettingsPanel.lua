@@ -101,11 +101,85 @@ function SettingsPanel.GetCooldown()
 end
 
 --------------------------------------------------------------------------------
--- Widget Construction Helpers (Headless Test Resilient)
+-- Widget Construction Helpers (Headless Test & Multi-Release Resilient)
 --------------------------------------------------------------------------------
 
+local function SetSolidColor(tex, r, g, b, a)
+    if not tex then return end
+    if type(tex.SetColorTexture) == "function" then
+        tex:SetColorTexture(r, g, b, a or 1)
+    elseif type(tex.SetTexture) == "function" then
+        tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+        if type(tex.SetVertexColor) == "function" then
+            tex:SetVertexColor(r, g, b, a or 1)
+        end
+    end
+end
+
+local function SafeCreateFrame(frameType, name, parent, templates)
+    if type(_G.CreateFrame) ~= "function" then return nil, false end
+    if type(templates) == "table" then
+        for _, tmpl in ipairs(templates) do
+            local ok, frame = pcall(_G.CreateFrame, frameType, name, parent, tmpl)
+            if ok and frame then
+                return frame, true
+            end
+        end
+    end
+    local ok, frame = pcall(_G.CreateFrame, frameType, name, parent)
+    if ok and frame then
+        return frame, false
+    end
+    return nil, false
+end
+
+local function CreatePanelButton(parent, name, width, height, labelText, onClick)
+    local btn = SafeCreateFrame("Button", name, parent, { "UIPanelButtonTemplate" })
+    if not btn then return nil end
+    if type(btn.SetSize) == "function" then
+        btn:SetSize(width, height)
+    end
+    if type(btn.GetFontString) ~= "function" or not btn:GetFontString() then
+        if type(btn.CreateTexture) == "function" then
+            local bg = btn:CreateTexture(nil, "BACKGROUND")
+            if bg and type(bg.SetAllPoints) == "function" then
+                bg:SetAllPoints(btn)
+                SetSolidColor(bg, 0.14, 0.18, 0.28, 0.95)
+            end
+        end
+        if type(btn.CreateFontString) == "function" then
+            local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            if fs then
+                if type(fs.SetAllPoints) == "function" then fs:SetAllPoints(btn) end
+                if type(fs.SetText) == "function" then fs:SetText(labelText) end
+            end
+        elseif type(btn.SetText) == "function" then
+            btn:SetText(labelText)
+        end
+    elseif type(btn.SetText) == "function" then
+        btn:SetText(labelText)
+    end
+    if type(btn.SetScript) == "function" and type(onClick) == "function" then
+        btn:SetScript("OnClick", onClick)
+    end
+    return btn
+end
+
 local function CreateCheckbox(parent, name, labelText, tooltipText, initialValue, onToggle)
-    local cb = _G.CreateFrame("CheckButton", name, parent, "InterfaceOptionsCheckButtonTemplate")
+    local cb, usedTemplate = SafeCreateFrame("CheckButton", name, parent, {
+        "UICheckButtonTemplate",
+        "InterfaceOptionsCheckButtonTemplate",
+        "ChatConfigCheckButtonTemplate",
+    })
+    if type(cb.SetSize) == "function" then
+        cb:SetSize(24, 24)
+    end
+    if not usedTemplate then
+        if type(cb.SetNormalTexture) == "function" then cb:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up") end
+        if type(cb.SetPushedTexture) == "function" then cb:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down") end
+        if type(cb.SetHighlightTexture) == "function" then cb:SetHighlightTexture("Interface\\Buttons\\UI-CheckBox-Highlight") end
+        if type(cb.SetCheckedTexture) == "function" then cb:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check") end
+    end
 
     -- Ensure CheckButton methods exist for headless mocks lacking XML templates
     if not cb.SetChecked then
@@ -124,8 +198,8 @@ local function CreateCheckbox(parent, name, labelText, tooltipText, initialValue
         end
     end
 
-    -- FontString label: In live WoW, InterfaceOptionsCheckButtonTemplate provides _G[name .. "Text"]
-    local fontString = _G[name .. "Text"]
+    -- FontString label
+    local fontString = _G[name .. "Text"] or cb.Text or cb.text
     if not fontString and type(parent.CreateFontString) == "function" then
         fontString = parent:CreateFontString(name .. "Text", "ARTWORK", "GameFontHighlight")
         if fontString and type(fontString.SetPoint) == "function" then
@@ -170,7 +244,25 @@ local function CreateCheckbox(parent, name, labelText, tooltipText, initialValue
 end
 
 local function CreateCooldownSlider(parent, name, labelFormat, minVal, maxVal, step, initialVal, onValChanged)
-    local slider = _G.CreateFrame("Slider", name, parent, "OptionsSliderTemplate")
+    local slider, usedTemplate = SafeCreateFrame("Slider", name, parent, {
+        "OptionsSliderTemplate",
+        "MinimalSliderTemplate",
+    })
+    if not usedTemplate then
+        if type(slider.SetOrientation) == "function" then
+            slider:SetOrientation("HORIZONTAL")
+        end
+        if type(slider.CreateTexture) == "function" then
+            local track = slider:CreateTexture(nil, "BACKGROUND")
+            if track and type(track.SetAllPoints) == "function" then
+                track:SetAllPoints(slider)
+                SetSolidColor(track, 0.14, 0.16, 0.22, 0.9)
+            end
+        end
+        if type(slider.SetThumbTexture) == "function" then
+            slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+        end
+    end
 
     -- Ensure Slider methods exist for headless mocks
     if not slider.SetMinMaxValues then
@@ -274,7 +366,22 @@ local function CreateEditBox(parent, name, labelText, initialText, onCommit)
         end
     end
 
-    local eb = _G.CreateFrame("EditBox", name, parent, "InputBoxTemplate")
+    local eb, usedTemplate = SafeCreateFrame("EditBox", name, parent, { "InputBoxTemplate" })
+    if not usedTemplate and eb then
+        if type(eb.SetFontObject) == "function" then
+            eb:SetFontObject("ChatFontNormal")
+        end
+        if type(eb.SetTextInsets) == "function" then
+            eb:SetTextInsets(6, 6, 2, 2)
+        end
+        if type(eb.CreateTexture) == "function" then
+            local bg = eb:CreateTexture(nil, "BACKGROUND")
+            if bg and type(bg.SetAllPoints) == "function" then
+                bg:SetAllPoints(eb)
+                SetSolidColor(bg, 0.08, 0.10, 0.16, 0.92)
+            end
+        end
+    end
 
     -- Ensure EditBox methods exist for headless mocks
     if not eb.SetText then
@@ -444,6 +551,40 @@ function SettingsPanel.RefreshControls()
             c.editboxes.blacklist:SetText(TableToCSV(blacklist, DEFAULT_BLACKLIST))
         end
     end
+
+    -- Live Diagnostics Summary
+    if SettingsPanel.diagLayerFS and type(SettingsPanel.diagLayerFS.SetText) == "function" then
+        local layer = ULO.Detection and ULO.Detection.GetCurrentLayer and ULO.Detection.GetCurrentLayer()
+        local conf = (ULO.Detection and ULO.Detection.GetLayerConfidence and ULO.Detection.GetLayerConfidence()) or "UNDETERMINED"
+        local serverId = ULO.Detection and ULO.Detection.GetCurrentServerId and ULO.Detection.GetCurrentServerId()
+        local zoneId = ULO.Detection and ULO.Detection.GetCurrentZoneId and ULO.Detection.GetCurrentZoneId()
+        SettingsPanel.diagLayerFS:SetText(string.format("Live Status: Layer %s (%s)  |  Server: %s  |  Zone: %s",
+            tostring(layer or "?"), tostring(conf), tostring(serverId or "-"), tostring(zoneId or "-")))
+    end
+    if SettingsPanel.diagNetFS and type(SettingsPanel.diagNetFS.SetText) == "function" then
+        local autoInv = true
+        if ULO.Coordination and type(ULO.Coordination.IsAutoInviteEnabled) == "function" then
+            autoInv = ULO.Coordination.IsAutoInviteEnabled()
+        end
+        local chText = "None"
+        if ULO.Interop and ULO.Interop.AutoLayer and type(ULO.Interop.AutoLayer.GetManagedChannels) == "function" then
+            local chList = ULO.Interop.AutoLayer.GetManagedChannels()
+            if type(chList) == "table" and #chList > 0 then
+                local formatted = {}
+                for _, ch in ipairs(chList) do
+                    local slot = (type(_G.GetChannelName) == "function") and select(1, _G.GetChannelName(ch)) or nil
+                    if type(slot) == "number" and slot > 0 then
+                        table.insert(formatted, string.format("/%d %s", slot, ch))
+                    else
+                        table.insert(formatted, ch)
+                    end
+                end
+                chText = table.concat(formatted, ", ")
+            end
+        end
+        SettingsPanel.diagNetFS:SetText(string.format("Auto-Invite: %s  |  Cooldown: %ds  |  Channels: %s",
+            autoInv and "ON" or "OFF", SettingsPanel.GetCooldown(), chText))
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -496,10 +637,88 @@ function SettingsPanel:Initialize()
 
         local subtitle = panelFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
         if subtitle and type(subtitle.SetPoint) == "function" then
-            subtitle:SetPoint("TOPLEFT", 16, -40)
+            subtitle:SetPoint("TOPLEFT", 16, -38)
             if type(subtitle.SetText) == "function" then
                 subtitle:SetText("Multi-release layer detection, refresh monitoring, and coordination settings.")
             end
+        end
+    end
+
+    -- Live Status & Diagnostics Summary Box + Quick Actions
+    if type(_G.CreateFrame) == "function" then
+        local diagBox = _G.CreateFrame("Frame", "ULODiagnosticsBox", panelFrame)
+        if diagBox then
+            if type(diagBox.SetSize) == "function" then diagBox:SetSize(490, 48) end
+            if type(diagBox.SetPoint) == "function" then diagBox:SetPoint("TOPLEFT", 16, -56) end
+            if type(diagBox.CreateTexture) == "function" then
+                local dBg = diagBox:CreateTexture(nil, "BACKGROUND")
+                if dBg and type(dBg.SetAllPoints) == "function" then
+                    dBg:SetAllPoints(diagBox)
+                    SetSolidColor(dBg, 0.06, 0.09, 0.14, 0.85)
+                end
+            end
+            if type(diagBox.CreateFontString) == "function" then
+                local d1 = diagBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                if d1 and type(d1.SetPoint) == "function" then
+                    d1:SetPoint("TOPLEFT", diagBox, "TOPLEFT", 10, -8)
+                    if type(d1.SetText) == "function" then d1:SetText("Live Status: Layer ? (Undetermined)") end
+                end
+                SettingsPanel.diagLayerFS = d1
+
+                local d2 = diagBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                if d2 and type(d2.SetPoint) == "function" then
+                    d2:SetPoint("TOPLEFT", diagBox, "TOPLEFT", 10, -26)
+                    if type(d2.SetText) == "function" then d2:SetText("Auto-Invite: ON | Channels: layer") end
+                end
+                SettingsPanel.diagNetFS = d2
+            end
+        end
+
+        local btnHud = CreatePanelButton(panelFrame, "ULOBtn_ShowHUD", 158, 22, "Show / Center Layer HUD", function()
+            if ULO.UI and ULO.UI.StatusHUD then
+                if type(ULO.UI.StatusHUD.ResetPosition) == "function" then
+                    ULO.UI.StatusHUD.ResetPosition()
+                elseif type(ULO.UI.StatusHUD.Show) == "function" then
+                    ULO.UI.StatusHUD.Show()
+                end
+            end
+        end)
+        if btnHud and type(btnHud.SetPoint) == "function" then
+            btnHud:SetPoint("TOPLEFT", 16, -110)
+        end
+
+        local btnScan = CreatePanelButton(panelFrame, "ULOBtn_ScanNPCs", 158, 22, "Scan Nearby NPCs", function()
+            if ULO.Detection and type(ULO.Detection.ScanUnit) == "function" then
+                ULO.Detection.ScanUnit("target")
+                ULO.Detection.ScanUnit("mouseover")
+                ULO.Detection.ScanUnit("npc")
+                ULO.Detection.ScanUnit("focus")
+                for i = 1, 10 do
+                    ULO.Detection.ScanUnit("nameplate" .. i)
+                end
+            end
+            SettingsPanel.RefreshControls()
+            if ULO.UI and ULO.UI.StatusHUD and type(ULO.UI.StatusHUD.Update) == "function" then
+                ULO.UI.StatusHUD.Update()
+            end
+        end)
+        if btnScan and type(btnScan.SetPoint) == "function" then
+            btnScan:SetPoint("TOPLEFT", 182, -110)
+        end
+
+        local btnChannels = CreatePanelButton(panelFrame, "ULOBtn_RejoinChannels", 158, 22, "Rejoin Layer Channels", function()
+            if ULO.Interop and ULO.Interop.AutoLayer then
+                if type(ULO.Interop.AutoLayer.JoinChannels) == "function" then
+                    ULO.Interop.AutoLayer.JoinChannels()
+                end
+                if type(ULO.Interop.AutoLayer.LeaveExcessChannels) == "function" then
+                    ULO.Interop.AutoLayer.LeaveExcessChannels()
+                end
+            end
+            SettingsPanel.RefreshControls()
+        end)
+        if btnChannels and type(btnChannels.SetPoint) == "function" then
+            btnChannels:SetPoint("TOPLEFT", 348, -110)
         end
     end
 
@@ -540,7 +759,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbAutoInvite and type(cbAutoInvite.SetPoint) == "function" then
-        cbAutoInvite:SetPoint("TOPLEFT", 16, -70)
+        cbAutoInvite:SetPoint("TOPLEFT", 16, -148)
     end
 
     -- Checkbox 2: Sound Muting on Invites
@@ -574,7 +793,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbMuteSounds and type(cbMuteSounds.SetPoint) == "function" then
-        cbMuteSounds:SetPoint("TOPLEFT", 16, -96)
+        cbMuteSounds:SetPoint("TOPLEFT", 16, -174)
     end
 
     -- Checkbox 3: Whisper Confirmation Alerts
@@ -604,7 +823,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbWhisperConfirm and type(cbWhisperConfirm.SetPoint) == "function" then
-        cbWhisperConfirm:SetPoint("TOPLEFT", 16, -122)
+        cbWhisperConfirm:SetPoint("TOPLEFT", 16, -200)
     end
 
     -- Checkbox 4: Show Minimap Button
@@ -646,7 +865,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbShowMinimap and type(cbShowMinimap.SetPoint) == "function" then
-        cbShowMinimap:SetPoint("TOPLEFT", 16, -148)
+        cbShowMinimap:SetPoint("TOPLEFT", 16, -226)
     end
 
     -- Checkbox 5: Show Status HUD
@@ -683,7 +902,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbShowHUD and type(cbShowHUD.SetPoint) == "function" then
-        cbShowHUD:SetPoint("TOPLEFT", 16, -174)
+        cbShowHUD:SetPoint("TOPLEFT", 16, -252)
     end
 
     -- Checkbox 6: Enable AutoLayer Protocol
@@ -717,7 +936,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbAutoLayer and type(cbAutoLayer.SetPoint) == "function" then
-        cbAutoLayer:SetPoint("TOPLEFT", 280, -70)
+        cbAutoLayer:SetPoint("TOPLEFT", 280, -148)
     end
 
     -- Checkbox 7: Enable Overlord Protocol
@@ -747,7 +966,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbOverlord and type(cbOverlord.SetPoint) == "function" then
-        cbOverlord:SetPoint("TOPLEFT", 280, -96)
+        cbOverlord:SetPoint("TOPLEFT", 280, -174)
     end
 
     -- Checkbox 8: Sync NovaWorldBuffs
@@ -784,7 +1003,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cbNWBSync and type(cbNWBSync.SetPoint) == "function" then
-        cbNWBSync:SetPoint("TOPLEFT", 280, -122)
+        cbNWBSync:SetPoint("TOPLEFT", 280, -200)
     end
 
     ----------------------------------------------------------------------------
@@ -804,7 +1023,7 @@ function SettingsPanel:Initialize()
         end
     )
     if cooldownSlider and type(cooldownSlider.SetPoint) == "function" then
-        cooldownSlider:SetPoint("TOPLEFT", 285, -170)
+        cooldownSlider:SetPoint("TOPLEFT", 285, -248)
         if type(cooldownSlider.SetSize) == "function" then
             cooldownSlider:SetSize(180, 16)
         end
@@ -842,10 +1061,10 @@ function SettingsPanel:Initialize()
     )
     if ebTriggers then
         if ebTriggers.label and type(ebTriggers.label.SetPoint) == "function" then
-            ebTriggers.label:SetPoint("TOPLEFT", 16, -225)
+            ebTriggers.label:SetPoint("TOPLEFT", 16, -302)
         end
         if type(ebTriggers.SetPoint) == "function" then
-            ebTriggers:SetPoint("TOPLEFT", 20, -242)
+            ebTriggers:SetPoint("TOPLEFT", 20, -319)
         end
         if type(ebTriggers.SetSize) == "function" then
             ebTriggers:SetSize(460, 22)
@@ -880,10 +1099,10 @@ function SettingsPanel:Initialize()
     )
     if ebInverted then
         if ebInverted.label and type(ebInverted.label.SetPoint) == "function" then
-            ebInverted.label:SetPoint("TOPLEFT", 16, -275)
+            ebInverted.label:SetPoint("TOPLEFT", 16, -352)
         end
         if type(ebInverted.SetPoint) == "function" then
-            ebInverted:SetPoint("TOPLEFT", 20, -292)
+            ebInverted:SetPoint("TOPLEFT", 20, -369)
         end
         if type(ebInverted.SetSize) == "function" then
             ebInverted:SetSize(460, 22)
@@ -916,10 +1135,10 @@ function SettingsPanel:Initialize()
     )
     if ebBlacklist then
         if ebBlacklist.label and type(ebBlacklist.label.SetPoint) == "function" then
-            ebBlacklist.label:SetPoint("TOPLEFT", 16, -325)
+            ebBlacklist.label:SetPoint("TOPLEFT", 16, -402)
         end
         if type(ebBlacklist.SetPoint) == "function" then
-            ebBlacklist:SetPoint("TOPLEFT", 20, -342)
+            ebBlacklist:SetPoint("TOPLEFT", 20, -419)
         end
         if type(ebBlacklist.SetSize) == "function" then
             ebBlacklist:SetSize(460, 22)

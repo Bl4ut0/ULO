@@ -249,6 +249,10 @@ if type(_G.CreateFrame) == "function" then
                     AutoLayer.LeaveExcessChannels()
                 end
             elseif event == "CHAT_MSG_CHANNEL" then
+                if (_G.ULODB and _G.ULODB.autoLayerEnabled == false)
+                   or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false) then
+                    return
+                end
                 local msg, sender, _, channelName, _, _, _, _, channelBaseName = ...
                 if type(msg) ~= "string" or type(sender) ~= "string" or sender == "" then
                     return

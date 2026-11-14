@@ -172,6 +172,10 @@ if type(_G.CreateFrame) == "function" then
     overlordFrame:RegisterEvent("CHAT_MSG_ADDON")
     overlordFrame:SetScript("OnEvent", function(self, event, prefix, msg, channel, sender)
         if event == "CHAT_MSG_ADDON" and prefix == PREFIX then
+            if (_G.ULODB and _G.ULODB.overlordEnabled == false)
+               or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false) then
+                return
+            end
             Overlord.ProcessMessage(msg, sender)
         end
     end)
