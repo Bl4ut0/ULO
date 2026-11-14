@@ -1,0 +1,23 @@
+{
+  "name": "ulo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Universal Layer Operator (ULO) - Multi-release World of Warcraft layer detection, refresh monitoring, automated hopping, and cross-addon coordination.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bl4ut0/ULO.git"
+  },
+  "author": "Bl4ut0",
+  "license": "MIT",
+  "scripts": {
+    "validate:lua": "node .tools/check_lua.js",
+    "validate:structure": "node .tools/check_addon_structure.js",
+    "test:lua": "powershell -NoProfile -ExecutionPolicy Bypass -File ./RunTests.ps1",
+    "test": "npm run validate:lua && npm run validate:structure && npm run test:lua",
+    "build:assets": "powershell -NoProfile -ExecutionPolicy Bypass -File ./.tools/build_assets.ps1",
+    "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File ./.tools/install_local.ps1 -SourceRoot . -Confirm:$false"
+  },
+  "devDependencies": {
+    "luaparse": "^0.3.1"
+  }
+}

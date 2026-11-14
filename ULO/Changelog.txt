@@ -1,0 +1,8 @@
+Universal Layer Operator (ULO) Changelog
+========================================
+
+v1.0.0 (2026-11-14)
+- Initial release supporting WoW Forever, Classic Era, TBC Anniversary, Mists Classic, and Retail.
+- Added GUID/UnitToken layer detection, 180s refresh countdown & safe reload deferral, and post-hop cooldown tracking.
+- Added automated invite coordination, AutoLayer/Overlord/NWB interoperability, and safe non-hop party invite handling.
+- Added custom ULO bronze astrolabe textures, orbital minimap badge, movable status HUD with Refresh/Hop buttons, and Blizzard Settings panel.

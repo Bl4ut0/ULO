@@ -1,0 +1,45 @@
+## Interface: 11509, 16001, 20506, 50504, 120001, 120105
+## Title: |cff00ccffULO|r - Universal Layer Operator
+## Notes: Multi-release layer detection, refresh monitoring, automated hopping, and cross-addon coordination.
+## Author: Bl4ut0
+## Version: 1.0.0
+## IconTexture: Interface\AddOns\ULO\Media\ULOIcon
+## AllowLoadGameType: classic, mainline
+## SavedVariables: ULO_DB, ULO_CONFIG, ULO_CHAR_DB, ULODB
+## SavedVariablesPerCharacter: ULO_CHAR_DB
+## DefaultState: enabled
+## Category: Map & Minimap
+## X-Category: Map & Minimap
+## X-Website: https://github.com/Bl4ut0/ULO
+## X-Part-Of: ULO
+
+# Core & Compatibility Foundation (Milestone 1)
+Core\Constants.lua
+Compatibility\Compat.lua
+Core\Init.lua
+
+# Detection Subsystem (Milestone 2)
+Detection\GuidParser.lua
+Detection\LayerScanner.lua
+
+# Monitor Subsystem (Milestone 2)
+Monitor\RefreshMonitor.lua
+Monitor\CooldownTracker.lua
+
+# Coordination Subsystem (Milestone 3)
+Coordination\KeywordMatcher.lua
+Coordination\InviteManager.lua
+Coordination\GroupManager.lua
+
+# Interoperability Subsystem (Milestone 3)
+Interop\AutoLayerProtocol.lua
+Interop\OverlordProtocol.lua
+Interop\NWBInterop.lua
+
+# User Interface Subsystem (Milestone 4)
+UI\MinimapBadge.lua
+UI\StatusHUD.lua
+UI\SettingsPanel.lua
+
+# Slash Commands & Entry Point (Milestone 4)
+Core\SlashCommands.lua

@@ -1,0 +1,32 @@
+* text=auto
+
+*.lua text eol=lf
+*.toc text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.js text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+*.tga binary
+*.png binary
+*.jpg binary
+
+# Exclude repository-only tooling, tests, docs, and media previews from git-archive exports
+.agents export-ignore
+.github export-ignore
+.tools export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
+.pkgmeta export-ignore
+AGENTS.md export-ignore
+CHANGELOG.md export-ignore
+Images export-ignore
+README.md export-ignore
+RunTests.bat export-ignore
+RunTests.ps1 export-ignore
+Tests export-ignore
+docs export-ignore
+package.json export-ignore
+package-lock.json export-ignore

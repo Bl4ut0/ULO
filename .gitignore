@@ -1,0 +1,26 @@
+# Node / build / release artifacts
+node_modules/
+.versions/
+Archive/
+
+# Teamwork / scratch files
+.agents/teamwork/
+*.bak
+*.tmp
+*.log
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Untracked scratch test suites (keep canonical 5-tier suite + runner)
+Tests/*
+!Tests/TestHarness.lua
+!Tests/Tier1_FeatureTests.lua
+!Tests/Tier2_BoundaryTests.lua
+!Tests/Tier3_PairwiseTests.lua
+!Tests/Tier4_ScenarioTests.lua
+!Tests/Tier5_AdversarialHarden.lua
+!Tests/RunTests.ps1
+!Tests/RunTests.bat
