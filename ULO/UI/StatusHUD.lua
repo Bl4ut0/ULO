@@ -169,19 +169,16 @@ local function CreateStyledButton(globalName, parent, width, height, labelText, 
 end
 
 local function TriggerHopToLayer(targetLayer)
+    local ok, reason = true, nil
     if ULO.Coordination and type(ULO.Coordination.RequestLayerHop) == "function" then
-        ULO.Coordination.RequestLayerHop(targetLayer)
-    end
-    if targetLayer and ULO.Interop then
-        if ULO.Interop.AutoLayer and type(ULO.Interop.AutoLayer.FormatBroadcastMessage) == "function" then
-            pcall(ULO.Interop.AutoLayer.FormatBroadcastMessage, targetLayer)
-        end
-        if ULO.Interop.Overlord and type(ULO.Interop.Overlord.BroadcastHopRequest) == "function" then
-            pcall(ULO.Interop.Overlord.BroadcastHopRequest, targetLayer)
-        end
+        ok, reason = ULO.Coordination.RequestLayerHop(targetLayer)
     end
 
-    if targetLayer then
+    if ok == false and reason == "cooldown" then
+        local msg = "Hop blocked: cooldown active (" .. StatusHUD.GetCooldownText() .. ")"
+        SetActionFeedback(msg)
+        PrintToChat(msg)
+    elseif targetLayer then
         local msg = string.format("Requested hop to Layer %d...", targetLayer)
         SetActionFeedback(msg)
         PrintToChat(msg)

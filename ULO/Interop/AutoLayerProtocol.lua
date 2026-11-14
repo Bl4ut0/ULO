@@ -198,7 +198,19 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
         seg = C.AUTOLAYER.SEGMENT_MAPS[mapID]
     end
 
-    local formatted = string.format("<%s> inv layer %d", seg, targetLayer)
+    local formatted
+    local lNum = tonumber(targetLayer)
+    if lNum then
+        formatted = string.format("<%s> inv layer %d", seg, lNum)
+    else
+        local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
+            and ULO.Detection.GetCurrentLayer() or nil
+        if tonumber(myLayer) then
+            formatted = string.format("<%s> inv not layer %d", seg, tonumber(myLayer))
+        else
+            formatted = string.format("<%s> inv layer", seg)
+        end
+    end
     if type(_G.SendChatMessage) == "function" then
         local chId = 0
         if type(_G.GetChannelName) == "function" then
@@ -276,6 +288,21 @@ if type(_G.CreateFrame) == "function" then
                     if (myLayer == nil or myLayer == targetLayer)
                         and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
                         ULO.Coordination.HandleWhisper(sender, string.format("inv layer %d", targetLayer))
+                    end
+                else
+                    local invSeg, exLayer = string.match(msg, "^%s*<([A-Z0-9_]+)>%s*inv%s+not%s+layer%s+(%d+)%s*$")
+                    local anySeg = not invSeg and string.match(msg, "^%s*<([A-Z0-9_]+)>%s*inv%s+layer%s*$") or nil
+                    if invSeg and exLayer then
+                        local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
+                            and ULO.Detection.GetCurrentLayer() or nil
+                        if (myLayer == nil or myLayer ~= tonumber(exLayer))
+                            and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
+                            ULO.Coordination.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)))
+                        end
+                    elseif anySeg then
+                        if ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
+                            ULO.Coordination.HandleWhisper(sender, "inv layer")
+                        end
                     end
                 end
             end

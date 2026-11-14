@@ -144,6 +144,79 @@ function Overlord.SendHopRequest(targetPlayer, targetLayer, reqId)
     return reqId
 end
 
+--- Broadcasts OverlordLJ hop whispers to up to 4 known Overlord peer candidates.
+-- @param targetLayer number|nil: Desired destination layer, or nil for any different layer
+-- @return number: Count of peer whisper requests dispatched
+function Overlord.BroadcastHopRequest(targetLayer)
+    if (_G.ULODB and _G.ULODB.overlordEnabled == false)
+       or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false) then
+        return 0
+    end
+
+    local lj = _G.Overlord and _G.Overlord.LayerJumper
+    if not lj or type(lj.KnownPlayers) ~= "function" then
+        return 0
+    end
+
+    local ok, peers = pcall(lj.KnownPlayers, lj)
+    if not ok or type(peers) ~= "table" then
+        return 0
+    end
+
+    local desiredLayer = tonumber(targetLayer)
+    local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
+        and ULO.Detection.GetCurrentLayer() or nil
+
+    local helpers, others = {}, {}
+    for _, row in ipairs(peers) do
+        if type(row) == "table" and type(row.name) == "string" and row.name ~= "" then
+            local isEnemy = row.enemy == true
+            if not isEnemy and type(lj.IsEnemy) == "function" then
+                local okE, res = pcall(lj.IsEnemy, lj, row.name)
+                if okE and res then
+                    isEnemy = true
+                end
+            end
+            if not isEnemy then
+                local peerLayer = tonumber(row.layer)
+                local eligible = false
+                if desiredLayer then
+                    eligible = (peerLayer == desiredLayer)
+                else
+                    eligible = (myLayer == nil) or (peerLayer ~= myLayer)
+                end
+                if eligible then
+                    if row.helper then
+                        table.insert(helpers, row)
+                    else
+                        table.insert(others, row)
+                    end
+                end
+            end
+        end
+    end
+
+    local candidates = {}
+    for _, row in ipairs(helpers) do
+        if #candidates >= 4 then break end
+        table.insert(candidates, row)
+    end
+    for _, row in ipairs(others) do
+        if #candidates >= 4 then break end
+        table.insert(candidates, row)
+    end
+
+    local sent = 0
+    local baseTime = (type(_G.time) == "function" and _G.time()) or math.floor(((type(_G.GetTime) == "function" and _G.GetTime()) or 0) * 1000)
+    for idx, row in ipairs(candidates) do
+        local reqId = string.format("%x%d", baseTime % 65535, idx)
+        Overlord.SendHopRequest(row.name, myLayer or "-", reqId)
+        sent = sent + 1
+    end
+
+    return sent
+end
+
 --- Dispatches a decline message over OverlordLJ WHISPER.
 -- @param targetPlayer string: Target player name
 -- @param reqId string|number: Session request token

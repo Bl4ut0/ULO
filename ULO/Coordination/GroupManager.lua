@@ -66,6 +66,11 @@ function Coordination.RequestLayerHop(targetLayer, preferredProtocol)
         ULO.Interop.AutoLayer.FormatBroadcastMessage(targetLayer)
     end
 
+    -- Whisper up to 4 known Overlord LayerJumper peer candidates if available
+    if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.BroadcastHopRequest) == "function" then
+        pcall(ULO.Interop.Overlord.BroadcastHopRequest, targetLayer)
+    end
+
     return true, "ok"
 end
 
