@@ -53,16 +53,29 @@ function AutoLayer.GenerateChannelName(realm, dateStr)
     return "layer" .. hash
 end
 
---- Joins the static 'layer' channel and today's dynamic date-salted channel.
+--- Joins today's dynamic date-salted AutoLayer channel (falling back to static 'layer' only if failed/headless).
 -- @return string: Today's dynamic channel name
 function AutoLayer.JoinChannels()
     local todayChannel = AutoLayer.GenerateChannelName()
+    local useStaticFallback = AutoLayer.IsChannelFailed(todayChannel) or (type(_G.GetChannelName) ~= "function")
     if type(_G.JoinChannelByName) == "function" then
-        pcall(_G.JoinChannelByName, "layer")
         pcall(_G.JoinChannelByName, todayChannel)
+        if useStaticFallback then
+            pcall(_G.JoinChannelByName, "layer")
+        end
+    end
+    if not useStaticFallback and type(_G.GetChannelName) == "function" and type(_G.LeaveChannelByName) == "function" then
+        local ok, slot = pcall(_G.GetChannelName, "layer")
+        if ok and type(slot) == "number" and slot > 0 then
+            pcall(_G.LeaveChannelByName, "layer")
+        end
     end
     if type(ULO.LogAction) == "function" then
-        ULO.LogAction("Channel", "Joined /layer and /" .. tostring(todayChannel))
+        if useStaticFallback then
+            ULO.LogAction("Channel", "Joined /layer and /" .. tostring(todayChannel))
+        else
+            ULO.LogAction("Channel", "Joined /" .. tostring(todayChannel))
+        end
     end
     return todayChannel
 end
@@ -230,6 +243,9 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
                     seenSlot[id] = true
                     if not AutoLayer.IsSlotProtected(id) then
                         table.insert(sentSlots, id)
+                        if #sentSlots >= 1 then
+                            break
+                        end
                     elseif not fallbackSlot then
                         fallbackSlot = id
                     end

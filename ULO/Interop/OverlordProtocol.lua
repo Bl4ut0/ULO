@@ -19,6 +19,8 @@ local Compat = ULO.Compat
 
 local PREFIX = (C and C.OVERLORD and C.OVERLORD.PREFIX) or "OverlordLJ"
 local failedRequests = {}
+local activeHopQueue = nil
+local HOP_CANDIDATE_TIMEOUT = 4.0
 Overlord.lastWhisperedPeers = Overlord.lastWhisperedPeers or {}
 
 --- Synchronizes Overlord LayerJumper HelpMode with ULO's configuration and wraps LJ:OnRequest
@@ -173,6 +175,9 @@ function Overlord.ProcessMessage(msg, sender)
         end
         if type(ULO.LogAction) == "function" then
             ULO.LogAction("Overlord", string.format("Peer %s declined (%s): %s", tostring(sender), tostring(dReqId), tostring(reason)))
+        end
+        if activeHopQueue and activeHopQueue.activeReqId == tostring(dReqId) then
+            Overlord.AdvanceHopCandidate(reason)
         end
         return true
     end
@@ -372,9 +377,62 @@ function Overlord.GetPeerSummary()
     return data.shardCount, data.helperCount, data.dirCount
 end
 
---- Broadcasts OverlordLJ hop whispers to up to 4 known Overlord peer candidates.
+--- Advances sequential OverlordLJ hop whispers one peer at a time.
+-- @param reason string|nil: Trigger reason ("start", decline code, or "timeout")
+-- @return boolean: true if another candidate whisper was dispatched
+function Overlord.AdvanceHopCandidate(reason)
+    local queue = activeHopQueue
+    if not queue then
+        return false
+    end
+
+    if queue.enforceAwaiting and ULO.Coordination and type(ULO.Coordination.IsAwaitingHop) == "function" then
+        if not ULO.Coordination.IsAwaitingHop() then
+            activeHopQueue = nil
+            return false
+        end
+    end
+
+    if (type(_G.IsInGroup) == "function" and _G.IsInGroup()) or (type(_G.IsInRaid) == "function" and _G.IsInRaid()) then
+        activeHopQueue = nil
+        return false
+    end
+
+    queue.index = queue.index + 1
+    local row = queue.candidates[queue.index]
+    if not row then
+        activeHopQueue = nil
+        return false
+    end
+
+    local reqId = string.format("%x%d", queue.baseTime % 65535, queue.index)
+    local reqKey = tostring(reqId)
+    queue.activeReqId = reqKey
+    Overlord.SendHopRequest(row.name, queue.originTag, reqId)
+
+    if type(ULO.LogAction) == "function" then
+        local progress = string.format("(%d/%d)", queue.index, #queue.candidates)
+        if row.layer then
+            ULO.LogAction("OverlordLJ", string.format("Whispered %s (Shard #%s) %s", tostring(row.name), tostring(row.layer), progress))
+        else
+            ULO.LogAction("OverlordLJ", string.format("Whispered %s (Overlord peer) %s", tostring(row.name), progress))
+        end
+    end
+
+    if queue.index < #queue.candidates and type(_G.C_Timer) == "table" and type(_G.C_Timer.After) == "function" then
+        _G.C_Timer.After(HOP_CANDIDATE_TIMEOUT, function()
+            if activeHopQueue == queue and activeHopQueue.activeReqId == reqKey then
+                Overlord.AdvanceHopCandidate("timeout")
+            end
+        end)
+    end
+
+    return true
+end
+
+--- Broadcasts OverlordLJ hop whispers sequentially (1 peer at a time, up to 4 candidates max).
 -- @param targetLayer number|nil: Desired destination layer, or nil for any different layer
--- @return number: Count of peer whisper requests dispatched
+-- @return number: Count of immediate peer whisper requests dispatched (1 or 0)
 function Overlord.BroadcastHopRequest(targetLayer)
     if (_G.ULODB and (_G.ULODB.overlordEnabled == false or _G.ULODB.uloOnlyMode == true))
        or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false) then
@@ -399,27 +457,28 @@ function Overlord.BroadcastHopRequest(targetLayer)
     AppendFrom(data.shardOthers)
     AppendFrom(data.dirContacts)
 
-    local sent = 0
+    if #candidates == 0 then
+        activeHopQueue = nil
+        if type(ULO.LogAction) == "function" then
+            ULO.LogAction("OverlordLJ", "0 known Overlord peers found")
+        end
+        return 0
+    end
+
     local baseTime = (type(_G.time) == "function" and _G.time()) or math.floor(((type(_G.GetTime) == "function" and _G.GetTime()) or 0) * 1000)
     local originTag = data.myServerId or data.ovLayer or data.myLayer or "-"
-    for idx, row in ipairs(candidates) do
-        local reqId = string.format("%x%d", baseTime % 65535, idx)
-        Overlord.SendHopRequest(row.name, originTag, reqId)
-        if type(ULO.LogAction) == "function" then
-            if row.layer then
-                ULO.LogAction("OverlordLJ", string.format("Whispered %s (Shard #%s)", tostring(row.name), tostring(row.layer)))
-            else
-                ULO.LogAction("OverlordLJ", string.format("Whispered %s (Overlord peer)", tostring(row.name)))
-            end
-        end
-        sent = sent + 1
-    end
+    local isAwaiting = ULO.Coordination and type(ULO.Coordination.IsAwaitingHop) == "function" and ULO.Coordination.IsAwaitingHop()
 
-    if sent == 0 and type(ULO.LogAction) == "function" then
-        ULO.LogAction("OverlordLJ", "0 known Overlord peers found")
-    end
+    activeHopQueue = {
+        candidates = candidates,
+        index = 0,
+        originTag = originTag,
+        baseTime = baseTime,
+        activeReqId = nil,
+        enforceAwaiting = (isAwaiting == true),
+    }
 
-    return sent
+    return Overlord.AdvanceHopCandidate("start") and 1 or 0
 end
 
 --- Dispatches a decline message over OverlordLJ WHISPER.
