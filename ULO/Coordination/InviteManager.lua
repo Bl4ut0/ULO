@@ -130,10 +130,25 @@ function Coordination.HandleWhisper(sender, msg, source)
         return false, "cached"
     end
 
-    -- Guard 6: Keyword recognition
-    local match, targetLayerOrReason = Coordination.MatchKeywords(msg)
+    -- Guard 6: Keyword & target layer recognition
+    local match, targetLayerOrReason, isInverted, r1, r2 = Coordination.MatchKeywords(msg)
     if not match then
         return false, targetLayerOrReason or "no_match"
+    end
+
+    if ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function" then
+        local myLayer = ULO.Detection.GetCurrentLayer()
+        if myLayer ~= nil then
+            if type(targetLayerOrReason) == "number" and targetLayerOrReason ~= myLayer then
+                return false, "layer_mismatch"
+            end
+            if isInverted and r1 == myLayer then
+                return false, "layer_excluded"
+            end
+            if not isInverted and r1 and r2 and (myLayer < r1 or myLayer > r2) then
+                return false, "layer_out_of_range"
+            end
+        end
     end
 
     -- Sound Muting: Suppress client invite audio chimes (567490, 567451)
@@ -172,8 +187,21 @@ if type(_G.CreateFrame) == "function" then
     local whisperFrame = _G.CreateFrame("Frame", "ULO_InviteManagerFrame")
     whisperFrame:RegisterEvent("CHAT_MSG_WHISPER")
     whisperFrame:SetScript("OnEvent", function(self, event, msg, sender)
-        if event == "CHAT_MSG_WHISPER" then
-            Coordination.HandleWhisper(sender, msg)
+        if event ~= "CHAT_MSG_WHISPER" then return end
+        local src = "Direct Whisper"
+        if type(msg) == "string" and (not Compat or not Compat.SafeString or Compat.SafeString(msg)) then
+            local lowerMsg = string.lower(msg)
+            if string.find(lowerMsg, "^%s*%[autolayer%]") or string.find(lowerMsg, "^%s*auto%s*layer") then
+                src = "AutoLayer"
+                if (_G.ULODB and (_G.ULODB.autoLayerEnabled == false or _G.ULODB.uloOnlyMode == true))
+                   or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false) then
+                    if type(ULO.LogAction) == "function" then
+                        ULO.LogAction("Blocked", "Ignored AutoLayer whisper from " .. tostring(sender))
+                    end
+                    return
+                end
+            end
         end
+        Coordination.HandleWhisper(sender, msg, src)
     end)
 end

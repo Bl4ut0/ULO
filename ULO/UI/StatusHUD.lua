@@ -76,14 +76,95 @@ local actionsButton = nil
 local optionsButton = nil
 local closeButton = nil
 local layerHopButtons = {}
+local hudBgTex = nil
+local hudHeaderBgTex = nil
+local hudHeaderLineTex = nil
+local hudTitleFS = nil
 
 -- Actions HUD Elements
 local actionsFrame = nil
 local actionsModeButton = nil
+local actionsThemeButton = nil
 local telemetryStateFS = nil
 local telemetryNetFS = nil
 local telemetryPeersFS = nil
+local actionsBgTex = nil
+local actionsHeaderBgTex = nil
+local actionsHeaderLineTex = nil
+local actionsTeleBgTex = nil
+local actionsTitleFS = nil
 local logLineFS = {}
+local themedButtons = {}
+
+-- Color Themes (Alliance Blue, Horde Red, Obsidian Black, Neutral Grey)
+local THEMES = {
+    blue = {
+        label  = "Blue",
+        title  = "|cff33b5ffULO|r",
+        bg     = { 0.05, 0.08, 0.16, 0.94 },
+        hdr    = { 0.08, 0.15, 0.30, 0.98 },
+        line   = { 0.10, 0.65, 1.00, 0.85 },
+        teleBg = { 0.07, 0.11, 0.21, 0.80 },
+        btnBg  = { 0.10, 0.18, 0.32, 0.95 },
+        btnHl  = { 0.15, 0.72, 1.00, 0.25 },
+        border = { 0.25, 0.62, 0.95, 0.92 },
+        btnBdr = { 0.28, 0.56, 0.88, 0.90 },
+    },
+    red = {
+        label  = "Red",
+        title  = "|cffff4433ULO|r",
+        bg     = { 0.14, 0.04, 0.05, 0.94 },
+        hdr    = { 0.28, 0.06, 0.07, 0.98 },
+        line   = { 0.95, 0.22, 0.18, 0.88 },
+        teleBg = { 0.20, 0.06, 0.07, 0.80 },
+        btnBg  = { 0.30, 0.08, 0.09, 0.95 },
+        btnHl  = { 1.00, 0.28, 0.22, 0.25 },
+        border = { 0.88, 0.25, 0.20, 0.92 },
+        btnBdr = { 0.78, 0.24, 0.18, 0.90 },
+    },
+    black = {
+        label  = "Black",
+        title  = "|cffd4af37ULO|r",
+        bg     = { 0.02, 0.02, 0.03, 0.96 },
+        hdr    = { 0.06, 0.06, 0.08, 0.98 },
+        line   = { 0.75, 0.60, 0.24, 0.85 },
+        teleBg = { 0.05, 0.05, 0.07, 0.82 },
+        btnBg  = { 0.09, 0.09, 0.12, 0.95 },
+        btnHl  = { 0.85, 0.70, 0.30, 0.22 },
+        border = { 0.42, 0.38, 0.28, 0.92 },
+        btnBdr = { 0.38, 0.34, 0.25, 0.90 },
+    },
+    grey = {
+        label  = "Grey",
+        title  = "|cffd8dde6ULO|r",
+        bg     = { 0.14, 0.15, 0.17, 0.94 },
+        hdr    = { 0.22, 0.24, 0.27, 0.98 },
+        line   = { 0.68, 0.72, 0.78, 0.85 },
+        teleBg = { 0.18, 0.19, 0.22, 0.80 },
+        btnBg  = { 0.24, 0.26, 0.30, 0.95 },
+        btnHl  = { 0.82, 0.85, 0.90, 0.24 },
+        border = { 0.56, 0.59, 0.64, 0.92 },
+        btnBdr = { 0.48, 0.51, 0.56, 0.90 },
+    },
+}
+local THEME_ORDER = { "blue", "red", "black", "grey" }
+local THEME_ALIASES = {
+    alliance = "blue",
+    horde    = "red",
+    gray     = "grey",
+    neutral  = "grey",
+    obsidian = "black",
+    dark     = "black",
+}
+
+local function RegisterSpecialFrame(frameName)
+    if type(frameName) ~= "string" or frameName == "" then return end
+    _G.UISpecialFrames = _G.UISpecialFrames or {}
+    for _, existing in ipairs(_G.UISpecialFrames) do
+        if existing == frameName then return end
+    end
+    table.insert(_G.UISpecialFrames, frameName)
+end
 
 local function PrintToChat(msg)
     if _G.DEFAULT_CHAT_FRAME and type(_G.DEFAULT_CHAT_FRAME.AddMessage) == "function" then
@@ -103,48 +184,53 @@ local function SetSolidColor(tex, r, g, b, a)
     end
 end
 
+local function ApplyBorderColor(frame, rgba)
+    if not frame or type(frame._borderTextures) ~= "table" or type(rgba) ~= "table" then return end
+    for _, tex in ipairs(frame._borderTextures) do
+        SetSolidColor(tex, rgba[1], rgba[2], rgba[3], rgba[4] or 1)
+    end
+end
+
 local function AddBorder(frame, r, g, b, a, thickness)
     if not frame or type(frame.CreateTexture) ~= "function" then return end
     local t = thickness or 1
+    frame._borderTextures = frame._borderTextures or {}
 
-    local top = frame:CreateTexture(nil, "BORDER")
-    if top then
-        SetSolidColor(top, r, g, b, a)
-        if type(top.SetPoint) == "function" and type(top.SetHeight) == "function" then
-            top:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-            top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-            top:SetHeight(t)
+    local function MakeEdge()
+        local tex = frame:CreateTexture(nil, "BORDER")
+        if tex then
+            SetSolidColor(tex, r, g, b, a)
+            table.insert(frame._borderTextures, tex)
         end
+        return tex
     end
 
-    local bottom = frame:CreateTexture(nil, "BORDER")
-    if bottom then
-        SetSolidColor(bottom, r, g, b, a)
-        if type(bottom.SetPoint) == "function" and type(bottom.SetHeight) == "function" then
-            bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
-            bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-            bottom:SetHeight(t)
-        end
+    local top = MakeEdge()
+    if top and type(top.SetPoint) == "function" and type(top.SetHeight) == "function" then
+        top:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+        top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
+        top:SetHeight(t)
     end
 
-    local left = frame:CreateTexture(nil, "BORDER")
-    if left then
-        SetSolidColor(left, r, g, b, a)
-        if type(left.SetPoint) == "function" and type(left.SetWidth) == "function" then
-            left:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-            left:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
-            left:SetWidth(t)
-        end
+    local bottom = MakeEdge()
+    if bottom and type(bottom.SetPoint) == "function" and type(bottom.SetHeight) == "function" then
+        bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+        bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+        bottom:SetHeight(t)
     end
 
-    local right = frame:CreateTexture(nil, "BORDER")
-    if right then
-        SetSolidColor(right, r, g, b, a)
-        if type(right.SetPoint) == "function" and type(right.SetWidth) == "function" then
-            right:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-            right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-            right:SetWidth(t)
-        end
+    local left = MakeEdge()
+    if left and type(left.SetPoint) == "function" and type(left.SetWidth) == "function" then
+        left:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+        left:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+        left:SetWidth(t)
+    end
+
+    local right = MakeEdge()
+    if right and type(right.SetPoint) == "function" and type(right.SetWidth) == "function" then
+        right:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
+        right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+        right:SetWidth(t)
     end
 end
 
@@ -226,7 +312,9 @@ function ULO.SetULOOnlyMode(enabled)
         ULO.config.interop.overlordEnabled = not flag
     end
 
-    if flag and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
+    if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
+        ULO.Interop.Overlord.SyncHelpMode()
+    elseif flag and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
         pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
     end
 
@@ -246,6 +334,114 @@ function ULO.SetULOOnlyMode(enabled)
     end
 end
 
+--- Normalizes and returns the active UI color theme key ("blue", "red", "black", "grey").
+-- @return string
+function ULO.GetTheme()
+    local raw = (_G.ULODB and _G.ULODB.theme)
+                or (_G.ULO_CONFIG and _G.ULO_CONFIG.ui and _G.ULO_CONFIG.ui.theme)
+                or (ULO.config and ULO.config.ui and ULO.config.ui.theme)
+                or "blue"
+    local key = string.lower(tostring(raw))
+    key = THEME_ALIASES[key] or key
+    if not THEMES[key] then
+        key = "blue"
+    end
+    return key
+end
+
+--- Applies the current theme palette to all ULO HUD frames, borders, headers, and buttons.
+function StatusHUD.ApplyTheme()
+    local key = ULO.GetTheme()
+    local t = THEMES[key]
+    if not t then return end
+
+    local function SetTex(tex, rgba)
+        if tex and type(rgba) == "table" then
+            SetSolidColor(tex, rgba[1], rgba[2], rgba[3], rgba[4] or 1)
+        end
+    end
+
+    SetTex(hudBgTex, t.bg)
+    SetTex(hudHeaderBgTex, t.hdr)
+    SetTex(hudHeaderLineTex, t.line)
+    ApplyBorderColor(hudFrame, t.border)
+    if hudTitleFS and type(hudTitleFS.SetText) == "function" then
+        hudTitleFS:SetText(t.title .. " Layer Op")
+    end
+
+    SetTex(actionsBgTex, t.bg)
+    SetTex(actionsHeaderBgTex, t.hdr)
+    SetTex(actionsHeaderLineTex, t.line)
+    SetTex(actionsTeleBgTex, t.teleBg)
+    ApplyBorderColor(actionsFrame, t.border)
+    if actionsTitleFS and type(actionsTitleFS.SetText) == "function" then
+        actionsTitleFS:SetText(t.title .. " Actions")
+    end
+
+    for _, btn in ipairs(themedButtons) do
+        SetTex(btn._bgTex, t.btnBg)
+        SetTex(btn._hlTex, t.btnHl)
+        ApplyBorderColor(btn, t.btnBdr)
+    end
+
+    if actionsThemeButton and actionsThemeButton.textFS and type(actionsThemeButton.textFS.SetText) == "function" then
+        actionsThemeButton.textFS:SetText(t.label)
+    end
+
+    local diagBox = _G.ULODiagnosticsBox
+    if diagBox and diagBox._bgTex then
+        SetTex(diagBox._bgTex, t.teleBg)
+    end
+end
+
+--- Sets and persists the UI color theme ("blue" / "alliance", "red" / "horde", "black", "grey").
+-- @param themeName string
+-- @return boolean, string|nil
+function ULO.SetTheme(themeName)
+    if type(themeName) ~= "string" then return false, nil end
+    local key = string.lower(string.match(themeName, "^%s*(.-)%s*$") or "")
+    key = THEME_ALIASES[key] or key
+    if not THEMES[key] then
+        return false, nil
+    end
+
+    _G.ULODB = _G.ULODB or {}
+    _G.ULODB.theme = key
+    _G.ULO_CONFIG = _G.ULO_CONFIG or {}
+    _G.ULO_CONFIG.ui = _G.ULO_CONFIG.ui or {}
+    _G.ULO_CONFIG.ui.theme = key
+    if ULO.config then
+        ULO.config.ui = ULO.config.ui or {}
+        ULO.config.ui.theme = key
+    end
+
+    StatusHUD.ApplyTheme()
+    ULO.LogAction("Core", "Theme set to " .. THEMES[key].label)
+
+    if ULO.TriggerCallback then
+        ULO.TriggerCallback("OnConfigChanged", "theme", key)
+    end
+    if ULO.UI and ULO.UI.SettingsPanel and type(ULO.UI.SettingsPanel.RefreshControls) == "function" then
+        ULO.UI.SettingsPanel.RefreshControls()
+    end
+    return true, key
+end
+
+--- Cycles through the available UI color themes (Blue -> Red -> Black -> Grey).
+-- @return string: Newly activated theme key
+function ULO.CycleTheme()
+    local cur = ULO.GetTheme()
+    local nextIdx = 1
+    for i, k in ipairs(THEME_ORDER) do
+        if k == cur then
+            nextIdx = (i % #THEME_ORDER) + 1
+            break
+        end
+    end
+    local _, applied = ULO.SetTheme(THEME_ORDER[nextIdx])
+    return applied or THEME_ORDER[nextIdx]
+end
+
 local function CreateStyledButton(globalName, parent, width, height, labelText, onClick, fontObj)
     if type(_G.CreateFrame) ~= "function" then return nil end
     local btn = _G.CreateFrame("Button", globalName, parent)
@@ -260,17 +456,20 @@ local function CreateStyledButton(globalName, parent, width, height, labelText, 
             if type(bg.SetAllPoints) == "function" then
                 bg:SetAllPoints(btn)
             end
-            SetSolidColor(bg, 0.12, 0.16, 0.24, 0.95)
+            SetSolidColor(bg, 0.10, 0.18, 0.32, 0.95)
+            btn._bgTex = bg
         end
         local hl = btn:CreateTexture(nil, "HIGHLIGHT")
         if hl then
             if type(hl.SetAllPoints) == "function" then
                 hl:SetAllPoints(btn)
             end
-            SetSolidColor(hl, 0.0, 0.72, 0.92, 0.22)
+            SetSolidColor(hl, 0.15, 0.72, 1.00, 0.25)
+            btn._hlTex = hl
         end
     end
-    AddBorder(btn, 0.62, 0.48, 0.18, 0.9, 1)
+    AddBorder(btn, 0.28, 0.56, 0.88, 0.90, 1)
+    table.insert(themedButtons, btn)
 
     if type(btn.CreateFontString) == "function" then
         local fs = btn:CreateFontString(nil, "OVERLAY", fontObj or "GameFontNormal")
@@ -316,6 +515,7 @@ local function TriggerHopToLayer(targetLayer)
 end
 
 if hudFrame then
+    RegisterSpecialFrame("ULOStatusHUD")
     hudFrame:SetSize(HUD_WIDTH, HUD_HEIGHT)
     if type(hudFrame.SetFrameStrata) == "function" then
         hudFrame:SetFrameStrata("DIALOG")
@@ -336,37 +536,40 @@ if hudFrame then
         hudFrame:RegisterForDrag("LeftButton")
     end
 
-    -- Solid Obsidian backdrop + gold borders so frame is always visible regardless of asset indexing
+    -- Solid Obsidian backdrop + theme borders so frame is always visible regardless of asset indexing
     if type(hudFrame.CreateTexture) == "function" then
         local bg = hudFrame:CreateTexture(nil, "BACKGROUND")
         if bg then
             if type(bg.SetAllPoints) == "function" then
                 bg:SetAllPoints(hudFrame)
             end
-            SetSolidColor(bg, 0.05, 0.07, 0.12, 0.94)
+            SetSolidColor(bg, 0.05, 0.08, 0.16, 0.94)
+            hudBgTex = bg
         end
 
         local headerBg = hudFrame:CreateTexture(nil, "ARTWORK")
         if headerBg then
-            SetSolidColor(headerBg, 0.09, 0.13, 0.22, 0.98)
+            SetSolidColor(headerBg, 0.08, 0.15, 0.30, 0.98)
             if type(headerBg.SetPoint) == "function" and type(headerBg.SetHeight) == "function" then
                 headerBg:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 1, -1)
                 headerBg:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -1, -1)
                 headerBg:SetHeight(26)
             end
+            hudHeaderBgTex = headerBg
         end
 
         local headerLine = hudFrame:CreateTexture(nil, "OVERLAY")
         if headerLine then
-            SetSolidColor(headerLine, 0.0, 0.78, 0.95, 0.85)
+            SetSolidColor(headerLine, 0.10, 0.65, 1.00, 0.85)
             if type(headerLine.SetPoint) == "function" and type(headerLine.SetHeight) == "function" then
                 headerLine:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 1, -27)
                 headerLine:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -1, -27)
                 headerLine:SetHeight(1)
             end
+            hudHeaderLineTex = headerLine
         end
     end
-    AddBorder(hudFrame, 0.78, 0.61, 0.24, 0.95, 1)
+    AddBorder(hudFrame, 0.25, 0.62, 0.95, 0.92, 1)
 
     -- Header, Status, Countdown, Cooldown, and Feedback FontStrings
     if type(hudFrame.CreateFontString) == "function" then
@@ -374,9 +577,10 @@ if hudFrame then
         if titleFS and type(titleFS.SetPoint) == "function" then
             titleFS:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -7)
             if type(titleFS.SetText) == "function" then
-                titleFS:SetText("|cff00ccffULO|r Layer Op")
+                titleFS:SetText("|cff33b5ffULO|r Layer Op")
             end
         end
+        hudTitleFS = titleFS
 
         statusTextFS = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         if statusTextFS and type(statusTextFS.SetPoint) == "function" then
@@ -845,6 +1049,7 @@ if not actionsFrame and type(_G.CreateFrame) == "function" then
 end
 
 if actionsFrame then
+    RegisterSpecialFrame("ULOActionsHUD")
     actionsFrame:SetSize(ACTIONS_WIDTH, ACTIONS_HEIGHT)
     if type(actionsFrame.SetFrameStrata) == "function" then
         actionsFrame:SetFrameStrata("DIALOG")
@@ -869,48 +1074,53 @@ if actionsFrame then
         local abg = actionsFrame:CreateTexture(nil, "BACKGROUND")
         if abg then
             if type(abg.SetAllPoints) == "function" then abg:SetAllPoints(actionsFrame) end
-            SetSolidColor(abg, 0.05, 0.07, 0.12, 0.94)
+            SetSolidColor(abg, 0.05, 0.08, 0.16, 0.94)
+            actionsBgTex = abg
         end
 
         local ahdr = actionsFrame:CreateTexture(nil, "ARTWORK")
         if ahdr then
-            SetSolidColor(ahdr, 0.09, 0.13, 0.22, 0.98)
+            SetSolidColor(ahdr, 0.08, 0.15, 0.30, 0.98)
             if type(ahdr.SetPoint) == "function" and type(ahdr.SetHeight) == "function" then
                 ahdr:SetPoint("TOPLEFT", actionsFrame, "TOPLEFT", 1, -1)
                 ahdr:SetPoint("TOPRIGHT", actionsFrame, "TOPRIGHT", -1, -1)
                 ahdr:SetHeight(26)
             end
+            actionsHeaderBgTex = ahdr
         end
 
         local aline = actionsFrame:CreateTexture(nil, "OVERLAY")
         if aline then
-            SetSolidColor(aline, 0.0, 0.78, 0.95, 0.85)
+            SetSolidColor(aline, 0.10, 0.65, 1.00, 0.85)
             if type(aline.SetPoint) == "function" and type(aline.SetHeight) == "function" then
                 aline:SetPoint("TOPLEFT", actionsFrame, "TOPLEFT", 1, -27)
                 aline:SetPoint("TOPRIGHT", actionsFrame, "TOPRIGHT", -1, -27)
                 aline:SetHeight(1)
             end
+            actionsHeaderLineTex = aline
         end
 
         local teleBg = actionsFrame:CreateTexture(nil, "ARTWORK")
         if teleBg then
-            SetSolidColor(teleBg, 0.08, 0.11, 0.18, 0.78)
+            SetSolidColor(teleBg, 0.07, 0.11, 0.21, 0.80)
             if type(teleBg.SetPoint) == "function" and type(teleBg.SetSize) == "function" then
                 teleBg:SetPoint("TOPLEFT", actionsFrame, "TOPLEFT", 10, -30)
                 teleBg:SetSize(320, 52)
             end
+            actionsTeleBgTex = teleBg
         end
     end
-    AddBorder(actionsFrame, 0.78, 0.61, 0.24, 0.95, 1)
+    AddBorder(actionsFrame, 0.25, 0.62, 0.95, 0.92, 1)
 
     if type(actionsFrame.CreateFontString) == "function" then
         local aTitle = actionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         if aTitle and type(aTitle.SetPoint) == "function" then
             aTitle:SetPoint("TOPLEFT", actionsFrame, "TOPLEFT", 10, -7)
             if type(aTitle.SetText) == "function" then
-                aTitle:SetText("|cff00ccffULO|r Actions & Telemetry")
+                aTitle:SetText("|cff33b5ffULO|r Actions")
             end
         end
+        actionsTitleFS = aTitle
 
         local function CreateTelemetryFS(yOfs, initText)
             local fs = actionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -926,7 +1136,7 @@ if actionsFrame then
 
         telemetryStateFS = CreateTelemetryFS(-34, "State: IDLE")
         telemetryNetFS   = CreateTelemetryFS(-49, "Mode: ALL ADDONS | Chan: -")
-        telemetryPeersFS = CreateTelemetryFS(-64, "Overlord Peers: 0 | Pending Inv: 0")
+        telemetryPeersFS = CreateTelemetryFS(-64, "Overlord: 0 shard (0 help, 0 dir) | Pend: 0")
 
         for i = 1, ACTIONS_VISIBLE_LINES do
             local fs = actionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -952,18 +1162,25 @@ if actionsFrame then
         aCloseBtn:SetPoint("TOPRIGHT", actionsFrame, "TOPRIGHT", -4, -4)
     end
 
-    local aClearBtn = CreateStyledButton("ULOActionsHUDClearButton", actionsFrame, 44, 18, "Clear", function()
+    local aClearBtn = CreateStyledButton("ULOActionsHUDClearButton", actionsFrame, 38, 18, "Clear", function()
         ActionsHUD.Clear()
     end, "GameFontNormalSmall")
     if aClearBtn and type(aClearBtn.SetPoint) == "function" then
         aClearBtn:SetPoint("RIGHT", aCloseBtn or actionsFrame, "LEFT", -3, 0)
     end
 
-    actionsModeButton = CreateStyledButton("ULOActionsHUDModeButton", actionsFrame, 76, 18, "Mode: All", function()
+    actionsModeButton = CreateStyledButton("ULOActionsHUDModeButton", actionsFrame, 68, 18, "Mode: All", function()
         ULO.SetULOOnlyMode(not ULO.IsULOOnlyMode())
     end, "GameFontNormalSmall")
     if actionsModeButton and type(actionsModeButton.SetPoint) == "function" then
         actionsModeButton:SetPoint("RIGHT", aClearBtn or actionsFrame, "LEFT", -3, 0)
+    end
+
+    actionsThemeButton = CreateStyledButton("ULOActionsHUDThemeButton", actionsFrame, 48, 18, "Blue", function()
+        ULO.CycleTheme()
+    end, "GameFontNormalSmall")
+    if actionsThemeButton and type(actionsThemeButton.SetPoint) == "function" then
+        actionsThemeButton:SetPoint("RIGHT", actionsModeButton or actionsFrame, "LEFT", -3, 0)
     end
 
     actionsFrame:SetScript("OnDragStart", function(self)
@@ -1095,29 +1312,15 @@ function ActionsHUD.Update()
         actionsModeButton.textFS:SetText(uloOnly and "Mode: ULO" or "Mode: All")
     end
 
-    local totalPeers, otherHelpers = 0, 0
-    local lj = _G.Overlord and _G.Overlord.LayerJumper
-    if lj and type(lj.KnownPlayers) == "function" then
-        local ok, peers = pcall(lj.KnownPlayers, lj)
-        if ok and type(peers) == "table" then
-            totalPeers = #peers
-            local myL = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function" and ULO.Detection.GetCurrentLayer() or nil
-            local myS = ULO.Detection and type(ULO.Detection.GetCurrentServerId) == "function" and ULO.Detection.GetCurrentServerId() or nil
-            for _, row in ipairs(peers) do
-                if type(row) == "table" and row.helper and not row.enemy then
-                    local pl = tonumber(row.layer)
-                    if (myL == nil and myS == nil) or (pl ~= myL and pl ~= myS) then
-                        otherHelpers = otherHelpers + 1
-                    end
-                end
-            end
-        end
+    local totalPeers, otherHelpers, dirPeers = 0, 0, 0
+    if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.GetPeerSummary) == "function" then
+        totalPeers, otherHelpers, dirPeers = ULO.Interop.Overlord.GetPeerSummary()
     end
     local pendingInv = (ULO.Coordination and type(ULO.Coordination.GetPendingInviteCount) == "function" and ULO.Coordination.GetPendingInviteCount()) or 0
 
     if telemetryPeersFS and type(telemetryPeersFS.SetText) == "function" then
-        telemetryPeersFS:SetText(string.format("Overlord Peers: %d (%d helpers other layers) | Pending Inv: %d",
-            totalPeers, otherHelpers, pendingInv))
+        telemetryPeersFS:SetText(string.format("Overlord: %d shard (%d help, %d dir) | Pend: %d",
+            totalPeers, otherHelpers, dirPeers, pendingInv))
     end
 
     local log = ULO.GetActionLog()
@@ -1156,7 +1359,10 @@ if type(_G.CreateFrame) == "function" then
                 end
                 StatusHUD.SetPosition(StatusHUD.GetPosition())
                 DockActionsToHUD()
-                if ULO.IsULOOnlyMode() and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
+                StatusHUD.ApplyTheme()
+                if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
+                    ULO.Interop.Overlord.SyncHelpMode()
+                elseif ULO.IsULOOnlyMode() and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
                     pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
                 end
                 if #ULO.GetActionLog() == 0 then
@@ -1179,8 +1385,9 @@ if type(_G.CreateFrame) == "function" then
     end
 end
 
--- Apply initial anchor
+-- Apply initial anchor and theme
 StatusHUD.SetPosition(StatusHUD.GetPosition())
+StatusHUD.ApplyTheme()
 
 -- Subscribe to ULO Callbacks for automatic HUD & Action Log refreshing
 if ULO.RegisterCallback then

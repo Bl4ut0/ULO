@@ -21,6 +21,33 @@ local PREFIX = (C and C.OVERLORD and C.OVERLORD.PREFIX) or "OverlordLJ"
 local failedRequests = {}
 Overlord.lastWhisperedPeers = Overlord.lastWhisperedPeers or {}
 
+--- Synchronizes Overlord LayerJumper HelpMode with ULO's configuration and wraps LJ:OnRequest
+-- so Overlord does not reply "off" or double-invite when ULO is managing invites.
+function Overlord.SyncHelpMode()
+    local uloOnly = (_G.ULODB and _G.ULODB.uloOnlyMode == true)
+    local disabled = (_G.ULODB and _G.ULODB.overlordEnabled == false)
+                     or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false)
+    local autoInv = not ULO.Coordination
+                    or type(ULO.Coordination.IsAutoInviteEnabled) ~= "function"
+                    or ULO.Coordination.IsAutoInviteEnabled()
+    local active = (not uloOnly) and (not disabled) and (autoInv == true)
+
+    local lj = _G.Overlord and _G.Overlord.LayerJumper
+    if lj then
+        if type(lj.SetHelpMode) == "function" then
+            pcall(lj.SetHelpMode, lj, active and "auto" or "off")
+        end
+        if type(lj.OnRequest) == "function" and not lj._uloHookedOnRequest then
+            lj._uloOrigOnRequest = lj.OnRequest
+            lj._uloHookedOnRequest = true
+            lj.OnRequest = function(...)
+                -- Handled centrally by ULO_OverlordEventFrame -> Overlord.ProcessMessage
+                return
+            end
+        end
+    end
+end
+
 --- Initializes and registers the OverlordLJ addon message prefix.
 function Overlord.Init()
     if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.RegisterAddonMessagePrefix) == "function" then
@@ -28,8 +55,24 @@ function Overlord.Init()
     elseif type(_G.RegisterAddonMessagePrefix) == "function" then
         pcall(_G.RegisterAddonMessagePrefix, PREFIX)
     end
+    Overlord.SyncHelpMode()
 end
 Overlord.Init()
+
+if type(ULO.RegisterCallback) == "function" then
+    ULO.RegisterCallback("OnLayerChanged", function(_, serverId)
+        local sid = tonumber(serverId)
+        if sid and sid > 0 and _G.Overlord and type(_G.Overlord.Shard) == "table" then
+            _G.Overlord.Shard.currentShardID = sid
+            _G.Overlord.Shard.lastUpdateAt = (type(_G.GetTime) == "function" and _G.GetTime()) or 0
+            local blocked = (_G.ULODB and (_G.ULODB.uloOnlyMode == true or _G.ULODB.overlordEnabled == false))
+                            or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.overlordEnabled == false)
+            if not blocked and _G.Overlord.Sync and type(_G.Overlord.Sync.SendToChannel) == "function" then
+                pcall(_G.Overlord.Sync.SendToChannel, _G.Overlord.Sync, "SH", tostring(sid))
+            end
+        end
+    end)
+end
 
 --- Processes an inbound Overlord wire message received over WHISPER.
 -- @param msg any: Wire message content
@@ -160,6 +203,175 @@ function Overlord.SendHopRequest(targetPlayer, targetLayer, reqId)
     return reqId
 end
 
+local function ShortKey(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if string.sub(name, 1, 5) == "BNet-" or string.sub(name, 1, 7) == "Bridge-" then
+        return nil
+    end
+    local short = string.match(name, "^([^%-]+)") or name
+    short = string.match(short, "^%s*(.-)%s*$") or short
+    if short == "" then return nil end
+    return string.lower(short)
+end
+
+local function IsSameLayerOrShard(peerLayer, myLayer, myServerId, ovLayer)
+    if not peerLayer then return false end
+    return (myLayer and peerLayer == myLayer)
+        or (myServerId and peerLayer == myServerId)
+        or (ovLayer and peerLayer == ovLayer)
+end
+
+local function IsPeerEnemy(lj, name, rowEnemy)
+    if rowEnemy == true then return true end
+    if lj and type(lj.IsEnemy) == "function" then
+        local okE, res = pcall(lj.IsEnemy, lj, name)
+        if okE and res then return true end
+    end
+    return false
+end
+
+--- Collects categorized Overlord peer candidates across KnownPlayers, knownHelpers, and directory contacts.
+-- @param targetLayer number|nil: Desired destination layer, or nil for any different layer
+-- @return table: Struct containing buckets and counts
+local function CollectOverlordPeers(targetLayer)
+    local result = {
+        shardHelpers = {},
+        knownHelpers = {},
+        shardOthers = {},
+        dirContacts = {},
+        shardCount = 0,
+        helperCount = 0,
+        dirCount = 0,
+        myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function" and ULO.Detection.GetCurrentLayer() or nil,
+        myServerId = ULO.Detection and type(ULO.Detection.GetCurrentServerId) == "function" and ULO.Detection.GetCurrentServerId() or nil,
+        ovLayer = nil,
+    }
+
+    local ov = _G.Overlord
+    if type(ov) ~= "table" then return result end
+
+    local lj = ov.LayerJumper
+    local shard = ov.Shard
+    local gf = ov.GroupFinder
+    local dir = ov.ChannelDirectory
+
+    if lj and type(lj.MyLayer) == "function" then
+        local okOv, ovId = pcall(lj.MyLayer, lj)
+        if okOv then result.ovLayer = tonumber(ovId) end
+    end
+
+    local desiredLayer = tonumber(targetLayer)
+    local selfKey = ShortKey(type(_G.UnitName) == "function" and _G.UnitName("player") or nil)
+    local seen = {}
+    if selfKey then seen[selfKey] = true end
+
+    local function TryEligibility(peerLayer)
+        if desiredLayer then
+            return peerLayer == desiredLayer
+        end
+        return not IsSameLayerOrShard(peerLayer, result.myLayer, result.myServerId, result.ovLayer)
+    end
+
+    -- 1. Overlord.LayerJumper:KnownPlayers() (shard cache)
+    if lj and type(lj.KnownPlayers) == "function" then
+        local ok, peers = pcall(lj.KnownPlayers, lj)
+        if ok and type(peers) == "table" then
+            result.shardCount = #peers
+            for _, row in ipairs(peers) do
+                if type(row) == "table" and type(row.name) == "string" then
+                    local k = ShortKey(row.name)
+                    if k and not seen[k] then
+                        seen[k] = true
+                        if not IsPeerEnemy(lj, row.name, row.enemy) then
+                            local peerLayer = tonumber(row.layer)
+                            if TryEligibility(peerLayer) then
+                                if row.helper then
+                                    result.helperCount = result.helperCount + 1
+                                    table.insert(result.shardHelpers, row)
+                                else
+                                    table.insert(result.shardOthers, row)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local now = (type(_G.GetTime) == "function" and _G.GetTime()) or 0
+
+    -- 2. Overlord.Shard.knownHelpers (~h presence flag without requiring front-zone shard)
+    if type(shard) == "table" and type(shard.knownHelpers) == "table" then
+        for name, untilAt in pairs(shard.knownHelpers) do
+            if type(name) == "string" and (tonumber(untilAt) or 0) > now then
+                local k = ShortKey(name)
+                if k and not seen[k] then
+                    seen[k] = true
+                    if not IsPeerEnemy(lj, name, false) then
+                        local peerLayer = type(shard.knownShards) == "table" and tonumber(shard.knownShards[name]) or nil
+                        local okLayer = desiredLayer and (peerLayer == desiredLayer)
+                                     or (not desiredLayer and not IsSameLayerOrShard(peerLayer, result.myLayer, result.myServerId, result.ovLayer))
+                        if okLayer then
+                            result.helperCount = result.helperCount + 1
+                            table.insert(result.knownHelpers, { name = name, layer = peerLayer, helper = true })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. GroupFinder:Contacts(), ChannelDirectory.partners, ChannelDirectory.names
+    local function AddDirCandidate(name)
+        if type(name) ~= "string" then return end
+        local k = ShortKey(name)
+        if not k or seen[k] then return end
+        seen[k] = true
+        if IsPeerEnemy(lj, name, false) then return end
+        local peerLayer = (type(shard) == "table" and type(shard.knownShards) == "table") and tonumber(shard.knownShards[name]) or nil
+        if IsSameLayerOrShard(peerLayer, result.myLayer, result.myServerId, result.ovLayer) then
+            return
+        end
+        result.dirCount = result.dirCount + 1
+        if not desiredLayer then
+            table.insert(result.dirContacts, { name = name, layer = peerLayer })
+        end
+    end
+
+    if gf and type(gf.Contacts) == "function" then
+        local okC, contacts = pcall(gf.Contacts, gf)
+        if okC and type(contacts) == "table" then
+            for _, name in ipairs(contacts) do
+                AddDirCandidate(name)
+            end
+        end
+    end
+    if type(dir) == "table" then
+        if type(dir.partners) == "table" then
+            for k, row in pairs(dir.partners) do
+                local name = (type(row) == "table" and row.name) or (type(row) == "string" and row) or k
+                AddDirCandidate(name)
+            end
+        end
+        if type(dir.names) == "table" then
+            for _, name in ipairs(dir.names) do
+                AddDirCandidate(name)
+                if result.dirCount >= 50 then break end
+            end
+        end
+    end
+
+    return result
+end
+
+--- Returns live Overlord peer counts across shard cache, helpers, and channel directory.
+-- @return number, number, number: shardPeersCount, helperCount, dirContactsCount
+function Overlord.GetPeerSummary()
+    local data = CollectOverlordPeers(nil)
+    return data.shardCount, data.helperCount, data.dirCount
+end
+
 --- Broadcasts OverlordLJ hop whispers to up to 4 known Overlord peer candidates.
 -- @param targetLayer number|nil: Desired destination layer, or nil for any different layer
 -- @return number: Count of peer whisper requests dispatched
@@ -169,84 +381,42 @@ function Overlord.BroadcastHopRequest(targetLayer)
         return 0
     end
 
-    local lj = _G.Overlord and _G.Overlord.LayerJumper
-    if not lj or type(lj.KnownPlayers) ~= "function" then
+    if type(_G.Overlord) ~= "table" then
         return 0
     end
 
-    local ok, peers = pcall(lj.KnownPlayers, lj)
-    if not ok or type(peers) ~= "table" then
-        return 0
-    end
-
-    local desiredLayer = tonumber(targetLayer)
-    local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
-        and ULO.Detection.GetCurrentLayer() or nil
-    local myServerId = ULO.Detection and type(ULO.Detection.GetCurrentServerId) == "function"
-        and ULO.Detection.GetCurrentServerId() or nil
-    local ovLayer = nil
-    if type(lj.MyLayer) == "function" then
-        local okOv, ovId = pcall(lj.MyLayer, lj)
-        if okOv then
-            ovLayer = tonumber(ovId)
-        end
-    end
-
-    local helpers, others = {}, {}
-    for _, row in ipairs(peers) do
-        if type(row) == "table" and type(row.name) == "string" and row.name ~= "" then
-            local isEnemy = row.enemy == true
-            if not isEnemy and type(lj.IsEnemy) == "function" then
-                local okE, res = pcall(lj.IsEnemy, lj, row.name)
-                if okE and res then
-                    isEnemy = true
-                end
-            end
-            if not isEnemy then
-                local peerLayer = tonumber(row.layer)
-                local eligible = false
-                if desiredLayer then
-                    eligible = (peerLayer == desiredLayer)
-                else
-                    local sameAsUs = (myLayer and peerLayer == myLayer)
-                                     or (myServerId and peerLayer == myServerId)
-                                     or (ovLayer and peerLayer == ovLayer)
-                    eligible = not sameAsUs
-                end
-                if eligible then
-                    if row.helper then
-                        table.insert(helpers, row)
-                    else
-                        table.insert(others, row)
-                    end
-                end
-            end
-        end
-    end
-
+    local data = CollectOverlordPeers(targetLayer)
     local candidates = {}
-    for _, row in ipairs(helpers) do
-        if #candidates >= 4 then break end
-        table.insert(candidates, row)
+    local function AppendFrom(bucket)
+        for _, row in ipairs(bucket) do
+            if #candidates >= 4 then break end
+            table.insert(candidates, row)
+        end
     end
-    for _, row in ipairs(others) do
-        if #candidates >= 4 then break end
-        table.insert(candidates, row)
-    end
+
+    AppendFrom(data.shardHelpers)
+    AppendFrom(data.knownHelpers)
+    AppendFrom(data.shardOthers)
+    AppendFrom(data.dirContacts)
 
     local sent = 0
     local baseTime = (type(_G.time) == "function" and _G.time()) or math.floor(((type(_G.GetTime) == "function" and _G.GetTime()) or 0) * 1000)
+    local originTag = data.myServerId or data.ovLayer or data.myLayer or "-"
     for idx, row in ipairs(candidates) do
         local reqId = string.format("%x%d", baseTime % 65535, idx)
-        Overlord.SendHopRequest(row.name, myServerId or ovLayer or myLayer or "-", reqId)
+        Overlord.SendHopRequest(row.name, originTag, reqId)
         if type(ULO.LogAction) == "function" then
-            ULO.LogAction("OverlordLJ", string.format("Whispered %s (Shard #%s)", tostring(row.name), tostring(row.layer or "?")))
+            if row.layer then
+                ULO.LogAction("OverlordLJ", string.format("Whispered %s (Shard #%s)", tostring(row.name), tostring(row.layer)))
+            else
+                ULO.LogAction("OverlordLJ", string.format("Whispered %s (Overlord peer)", tostring(row.name)))
+            end
         end
         sent = sent + 1
     end
 
     if sent == 0 and type(ULO.LogAction) == "function" then
-        ULO.LogAction("OverlordLJ", "0 known Overlord peers on other layers")
+        ULO.LogAction("OverlordLJ", "0 known Overlord peers found")
     end
 
     return sent

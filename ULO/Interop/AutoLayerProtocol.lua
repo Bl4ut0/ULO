@@ -188,63 +188,73 @@ function AutoLayer.ParseMessage(msg)
     return nil
 end
 
---- Formats an outgoing hop broadcast message with appropriate continental segment prefix.
--- @param targetLayer number: Requested layer number
+--- Formats and broadcasts an outgoing hop request on active AutoLayer channels.
+-- @param targetLayer number|nil: Requested layer number, or nil for any available layer
 -- @param mapID number|nil: UiMapID of current zone
 -- @return string: Formatted broadcast string (e.g. "<AZ> inv layer 3")
 function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
     mapID = mapID or (type(_G.C_Map) == "table" and _G.C_Map.GetBestMapForUnit and _G.C_Map.GetBestMapForUnit("player")) or 947
+    local uloOnly = (_G.ULODB and _G.ULODB.uloOnlyMode == true)
     local seg = "AZ"
-    if _G.ULODB and _G.ULODB.uloOnlyMode == true then
+    if uloOnly then
         seg = "ULO"
     elseif mapID == 1945 then
         seg = "OL"
-    elseif C and C.AUTOLAYER and C.AUTOLAYER.SEGMENT_MAPS and C.AUTOLAYER.SEGMENT_MAPS[mapID] then
-        seg = C.AUTOLAYER.SEGMENT_MAPS[mapID]
     end
 
     local formatted
     local lNum = tonumber(targetLayer)
     if lNum then
         formatted = string.format("<%s> inv layer %d", seg, lNum)
-    else
+    elseif seg == "ULO" then
         local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
             and ULO.Detection.GetCurrentLayer() or nil
         if tonumber(myLayer) then
-            formatted = string.format("<%s> inv not layer %d", seg, tonumber(myLayer))
+            formatted = string.format("<ULO> inv not layer %d", tonumber(myLayer))
         else
-            formatted = string.format("<%s> inv layer", seg)
+            formatted = "<ULO> inv layer"
         end
+    else
+        formatted = string.format("<%s> inv layer", seg)
     end
-    local chId = 0
+
+    local sentSlots = {}
     if type(_G.SendChatMessage) == "function" then
         if type(_G.GetChannelName) == "function" then
             local todayCh = AutoLayer.GenerateChannelName()
-            local ok1, id1 = pcall(_G.GetChannelName, todayCh)
-            if ok1 and type(id1) == "number" and id1 > 0 and not AutoLayer.IsSlotProtected(id1) then
-                chId = id1
-            else
-                local ok2, id2 = pcall(_G.GetChannelName, "layer")
-                if ok2 and type(id2) == "number" and id2 > 0 and not AutoLayer.IsSlotProtected(id2) then
-                    chId = id2
-                elseif ok1 and type(id1) == "number" and id1 > 0 then
-                    chId = id1
-                elseif ok2 and type(id2) == "number" and id2 > 0 then
-                    chId = id2
+            local seenSlot = {}
+            local fallbackSlot = nil
+            for _, chName in ipairs({ todayCh, "layer" }) do
+                local ok, id = pcall(_G.GetChannelName, chName)
+                if ok and type(id) == "number" and id > 0 and not seenSlot[id] then
+                    seenSlot[id] = true
+                    if not AutoLayer.IsSlotProtected(id) then
+                        table.insert(sentSlots, id)
+                    elseif not fallbackSlot then
+                        fallbackSlot = id
+                    end
                 end
+            end
+            if #sentSlots == 0 and fallbackSlot then
+                table.insert(sentSlots, fallbackSlot)
             end
         else
             -- Headless test harness environments without GetChannelName default to channel 1
-            chId = 1
+            table.insert(sentSlots, 1)
         end
-        if chId > 0 then
-            pcall(_G.SendChatMessage, formatted, "CHANNEL", nil, chId)
+        for _, slotId in ipairs(sentSlots) do
+            pcall(_G.SendChatMessage, formatted, "CHANNEL", nil, slotId)
         end
     end
+
     if type(ULO.LogAction) == "function" then
         local tag = (seg == "ULO") and "ULO Chan" or "AutoLayer"
-        if chId > 0 then
-            ULO.LogAction(tag, string.format("Sent %q on /%d", formatted, chId))
+        if #sentSlots > 0 then
+            local slotLabels = {}
+            for _, slotId in ipairs(sentSlots) do
+                table.insert(slotLabels, "/" .. tostring(slotId))
+            end
+            ULO.LogAction(tag, string.format("Sent %q on %s", formatted, table.concat(slotLabels, ", ")))
         else
             ULO.LogAction(tag, string.format("Prepared %q (no channel slot)", formatted))
         end
@@ -301,27 +311,27 @@ if type(_G.CreateFrame) == "function" then
                 end
 
                 local seg, targetLayer = AutoLayer.ParseMessage(msg)
+                local coord = ULO.Coordination
                 if seg and targetLayer then
-                    local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
-                        and ULO.Detection.GetCurrentLayer() or nil
-                    if (myLayer == nil or myLayer == targetLayer)
-                        and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                        ULO.Coordination.HandleWhisper(sender, string.format("inv layer %d", targetLayer), sourceTag)
+                    if coord and type(coord.HandleWhisper) == "function" then
+                        coord.HandleWhisper(sender, string.format("inv layer %d", targetLayer), sourceTag)
                     end
                 else
-                    local invSeg, exLayer = string.match(msg, "^%s*<([A-Z0-9_]+)>%s*inv%s+not%s+layer%s+(%d+)%s*$")
-                    local anySeg = not invSeg and string.match(msg, "^%s*<([A-Z0-9_]+)>%s*inv%s+layer%s*$") or nil
-                    if invSeg and exLayer then
-                        local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
-                            and ULO.Detection.GetCurrentLayer() or nil
-                        if (myLayer == nil or myLayer ~= tonumber(exLayer))
-                            and ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                            ULO.Coordination.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)), sourceTag)
+                    local exLayer = string.match(msg, "^%s*<[A-Z0-9_.]+>%s*inv%s+not%s+layer%s+(%d+)%s*$")
+                    local isAnyHeaderHop = (not exLayer) and (string.match(msg, "^%s*<[A-Z0-9_.]+>%s*inv%s+layer%s*$") ~= nil)
+                    if exLayer then
+                        if coord and type(coord.HandleWhisper) == "function" then
+                            coord.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)), sourceTag)
                         end
-                    elseif anySeg then
-                        if ULO.Coordination and type(ULO.Coordination.HandleWhisper) == "function" then
-                            ULO.Coordination.HandleWhisper(sender, "inv layer", sourceTag)
+                    elseif isAnyHeaderHop then
+                        if coord and type(coord.HandleWhisper) == "function" then
+                            coord.HandleWhisper(sender, "inv layer", sourceTag)
                         end
+                    elseif not string.match(msg, "^%s*<") and coord
+                           and type(coord.MatchKeywords) == "function"
+                           and type(coord.HandleWhisper) == "function"
+                           and coord.MatchKeywords(msg) then
+                        coord.HandleWhisper(sender, msg, sourceTag)
                     end
                 end
             end

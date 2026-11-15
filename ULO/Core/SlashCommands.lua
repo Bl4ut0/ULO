@@ -54,7 +54,7 @@ function ULO.HandleSlashCommand(rawMsg)
         arg1 = arg1 and (string.match(arg1, "^%s*(.-)%s*$") or "") or ""
 
         if cmd == "help" then
-            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo ui, /ulo actions, /ulo only, /ulo invite, /ulo status, /ulo config, /layer <num>")
+            OutputChat("Universal Layer Operator Commands: /ulo help, /ulo ui, /ulo actions, /ulo only, /ulo theme, /ulo invite, /ulo status, /ulo config, /layer <num>")
         elseif cmd == "ui" or cmd == "hud" or cmd == "show" then
             if ULO.UI and ULO.UI.StatusHUD then
                 if type(ULO.UI.StatusHUD.ResetPosition) == "function" then
@@ -72,6 +72,20 @@ function ULO.HandleSlashCommand(rawMsg)
                 local nextMode = not ULO.IsULOOnlyMode()
                 ULO.SetULOOnlyMode(nextMode)
                 OutputChat(nextMode and "Mode: ULO ONLY (AutoLayer & Overlord invites ignored)" or "Mode: ALL ADDONS (AutoLayer & Overlord enabled)")
+            end
+        elseif cmd == "theme" or cmd == "color" then
+            if arg1 == "" then
+                if type(ULO.CycleTheme) == "function" then
+                    ULO.CycleTheme()
+                end
+                OutputChat("ULO Theme: " .. tostring(type(ULO.GetTheme) == "function" and ULO.GetTheme() or "blue"))
+            elseif type(ULO.SetTheme) == "function" then
+                local okTheme = ULO.SetTheme(arg1)
+                if okTheme then
+                    OutputChat("ULO Theme: " .. tostring(type(ULO.GetTheme) == "function" and ULO.GetTheme() or arg1))
+                else
+                    OutputChat("Unknown theme. Use: blue (alliance), red (horde), black, grey")
+                end
             end
         elseif cmd == "invite" or cmd == "toggle" then
             local argLower = string.lower(arg1 or "")

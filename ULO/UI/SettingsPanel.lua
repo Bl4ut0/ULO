@@ -585,6 +585,11 @@ function SettingsPanel.RefreshControls()
         SettingsPanel.diagNetFS:SetText(string.format("Auto-Invite: %s  |  Cooldown: %ds  |  Channels: %s",
             autoInv and "ON" or "OFF", SettingsPanel.GetCooldown(), chText))
     end
+    if SettingsPanel.themeLabelFS and type(SettingsPanel.themeLabelFS.SetText) == "function" then
+        local activeTheme = (ULO and type(ULO.GetTheme) == "function" and ULO.GetTheme()) or "blue"
+        local labels = { blue = "Blue (Alliance)", red = "Red (Horde)", black = "Black", grey = "Grey" }
+        SettingsPanel.themeLabelFS:SetText("UI Color Theme (Active: " .. (labels[activeTheme] or activeTheme) .. "):")
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -655,6 +660,7 @@ function SettingsPanel:Initialize()
                 if dBg and type(dBg.SetAllPoints) == "function" then
                     dBg:SetAllPoints(diagBox)
                     SetSolidColor(dBg, 0.06, 0.09, 0.14, 0.85)
+                    diagBox._bgTex = dBg
                 end
             end
             if type(diagBox.CreateFontString) == "function" then
@@ -754,6 +760,9 @@ function SettingsPanel:Initialize()
             end
             if ULO.Coordination and type(ULO.Coordination.ToggleAutoInvite) == "function" then
                 ULO.Coordination.ToggleAutoInvite(checked)
+            end
+            if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
+                ULO.Interop.Overlord.SyncHelpMode()
             end
             if ULO.TriggerCallback then ULO.TriggerCallback("OnConfigChanged", "autoInvite", checked) end
         end
@@ -962,6 +971,9 @@ function SettingsPanel:Initialize()
                 ULO.config.interop = ULO.config.interop or {}
                 ULO.config.interop.overlordEnabled = checked
             end
+            if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
+                ULO.Interop.Overlord.SyncHelpMode()
+            end
             if ULO.TriggerCallback then ULO.TriggerCallback("OnConfigChanged", "overlordEnabled", checked) end
         end
     )
@@ -1146,6 +1158,41 @@ function SettingsPanel:Initialize()
     end
 
     ----------------------------------------------------------------------------
+    -- 4. UI Color Theme Selector (Blue/Alliance, Red/Horde, Black, Grey)
+    ----------------------------------------------------------------------------
+    if type(panelFrame.CreateFontString) == "function" then
+        local themeLabel = panelFrame:CreateFontString("ULOThemeLabelFS", "ARTWORK", "GameFontNormalSmall")
+        if themeLabel then
+            if type(themeLabel.SetPoint) == "function" then
+                themeLabel:SetPoint("TOPLEFT", 16, -456)
+            end
+            if type(themeLabel.SetText) == "function" then
+                themeLabel:SetText("UI Color Theme:")
+            end
+            SettingsPanel.themeLabelFS = themeLabel
+        end
+    end
+
+    local themeOptions = {
+        { key = "blue",  name = "ULOBtn_ThemeBlue",  label = "Blue (Alliance)", x = 16  },
+        { key = "red",   name = "ULOBtn_ThemeRed",   label = "Red (Horde)",     x = 136 },
+        { key = "black", name = "ULOBtn_ThemeBlack", label = "Black",           x = 256 },
+        { key = "grey",  name = "ULOBtn_ThemeGrey",  label = "Grey",            x = 376 },
+    }
+    local themeButtons = {}
+    for _, opt in ipairs(themeOptions) do
+        local tBtn = CreatePanelButton(panelFrame, opt.name, 112, 22, opt.label, function()
+            if ULO and type(ULO.SetTheme) == "function" then
+                ULO.SetTheme(opt.key)
+            end
+        end)
+        if tBtn and type(tBtn.SetPoint) == "function" then
+            tBtn:SetPoint("TOPLEFT", opt.x, -474)
+        end
+        themeButtons[opt.key] = tBtn
+    end
+
+    ----------------------------------------------------------------------------
     -- 4. Expose Controls Table for Verification & Inspection
     ----------------------------------------------------------------------------
     SettingsPanel.controls = {
@@ -1165,6 +1212,7 @@ function SettingsPanel:Initialize()
             blacklist      = ebBlacklist,
         },
         slider = cooldownSlider,
+        themeButtons = themeButtons,
 
         -- Flat direct aliases
         autoInvite     = cbAutoInvite,
@@ -1199,6 +1247,10 @@ function SettingsPanel:Initialize()
         end
     elseif type(_G.InterfaceOptions_AddCategory) == "function" then
         pcall(_G.InterfaceOptions_AddCategory, panelFrame)
+    end
+
+    if ULO.UI and ULO.UI.StatusHUD and type(ULO.UI.StatusHUD.ApplyTheme) == "function" then
+        ULO.UI.StatusHUD.ApplyTheme()
     end
 
     return panelFrame
