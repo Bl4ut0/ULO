@@ -344,10 +344,11 @@ if type(_G.CreateFrame) == "function" then
                             coord.HandleWhisper(sender, "inv layer", sourceTag)
                         end
                     elseif not string.match(msg, "^%s*<") and coord
-                           and type(coord.MatchKeywords) == "function"
-                           and type(coord.HandleWhisper) == "function"
-                           and coord.MatchKeywords(msg) then
-                        coord.HandleWhisper(sender, msg, sourceTag)
+                           and type(coord.HandleWhisper) == "function" then
+                        local chatMatcher = (type(coord.MatchChatRequest) == "function") and coord.MatchChatRequest or coord.MatchKeywords
+                        if type(chatMatcher) == "function" and chatMatcher(msg) then
+                            coord.HandleWhisper(sender, msg, sourceTag, true)
+                        end
                     end
                 end
             end

@@ -22,6 +22,11 @@ local DEFAULT_BLACKLIST = {
     "lfm", "lfg", "ashen", "ashenvale", "autoinv", "auto inv",
     "pst for", "guild", "raid", "enchant", "player",
     "what layer", "which layer", "worldbuffs",
+    "on layer", "in layer", "at layer", "same layer", "my layer",
+    "this layer", "that layer", "current layer", "wrong layer",
+    "bad layer", "dead layer", "full layer", "laggy layer",
+    "layer is", "layer has", "layer was", "world boss",
+    "kazzak", "doomwalker", "spawned",
 }
 
 local function BuildBlacklist()
@@ -79,11 +84,24 @@ function Coordination.MatchKeywords(msg)
 
     local lower = string.lower(msg)
 
-    -- Rejection 2: Anti-Spam Blacklist filter (wtb, wts, boost, portals, gdkp, etc.)
+    -- Rejection 2: Anti-Spam & Conversational Blacklist filter
     for _, word in ipairs(BLACKLIST_WORDS) do
         local pat = "%f[%w]" .. string.gsub(word, "%s+", "%%s+") .. "%f[%W]"
         if string.find(lower, pat) then
             return false, "blacklisted"
+        end
+    end
+
+    -- Rejection 3: Conversational questions ending in '?' without an explicit invite/hop keyword
+    if string.find(lower, "%?%s*$") then
+        local hasExplicitAsk = string.find(lower, "%f[%w]inv%f[%W]")
+            or string.find(lower, "%f[%w]invite%f[%W]")
+            or string.find(lower, "%f[%w]hop%f[%W]")
+            or string.find(lower, "%f[%w]swap%f[%W]")
+            or string.find(lower, "%f[%w]pls%f[%W]")
+            or string.find(lower, "%f[%w]please%f[%W]")
+        if not hasExplicitAsk then
+            return false, "question"
         end
     end
 
@@ -125,15 +143,56 @@ function Coordination.MatchKeywords(msg)
         return true, lNum
     end
 
-    -- Match Pattern 4: Standard whole-word triggers "layer", "inv", "invite"
+    -- Match Pattern 4: Standard whole-word triggers "layer", "inv", "invite" (+ custom Leatrix Plus InvKey)
     local hasLayer = string.find(lower, "%f[%w]layer%f[%W]")
     local hasInv = string.find(lower, "%f[%w]inv%f[%W]")
     local hasInvite = string.find(lower, "%f[%w]invite%f[%W]")
-    if hasLayer or hasInv or hasInvite then
+    local hasLeaKey = false
+    if not (_G.ULODB and _G.ULODB.uloOnlyMode == true) and type(_G.LeaPlusLC) == "table" and type(_G.LeaPlusLC["InvKey"]) == "string" then
+        local leaKey = string.lower(string.match(_G.LeaPlusLC["InvKey"], "^%s*(.-)%s*$") or "")
+        if leaKey ~= "" and leaKey == string.match(lower, "^%s*(.-)%s*$") then
+            hasLeaKey = true
+        end
+    end
+    if hasLayer or hasInv or hasInvite or hasLeaKey then
         return true, nil
     end
 
     return false
+end
+
+--- Strict chat-channel request matcher (for Guild chat and untagged public channels).
+-- Requires explicit layer + invite/hop/request intent so casual chat about layers is ignored.
+-- @param msg any: Candidate chat message
+-- @return boolean, number|string|nil, boolean|nil, number|nil, number|nil
+function Coordination.MatchChatRequest(msg)
+    local match, targetLayerOrReason, isInverted, r1, r2 = Coordination.MatchKeywords(msg)
+    if not match then
+        return false, targetLayerOrReason
+    end
+
+    if type(msg) ~= "string" or #msg > 64 then
+        return false, "chat_intent_required"
+    end
+
+    local lower = string.lower(msg)
+    if string.match(lower, "^%s*<[%w_.]+>%s*inv") then
+        return match, targetLayerOrReason, isInverted, r1, r2
+    end
+
+    local hasLayer = string.find(lower, "%f[%w]layer%f[%W]") ~= nil
+    local hasIntent = (string.find(lower, "%f[%w]inv%f[%W]") ~= nil)
+        or (string.find(lower, "%f[%w]invite%f[%W]") ~= nil)
+        or (string.find(lower, "%f[%w]hop%f[%W]") ~= nil)
+        or (string.find(lower, "%f[%w]swap%f[%W]") ~= nil)
+        or (string.find(lower, "%f[%w]lf%f[%W]") ~= nil)
+        or (string.find(lower, "%f[%w]need%f[%W]") ~= nil)
+
+    if not (hasLayer and hasIntent) then
+        return false, "chat_intent_required"
+    end
+
+    return match, targetLayerOrReason, isInverted, r1, r2
 end
 
 --- Validates whether a message is an acceptable layer invitation request.

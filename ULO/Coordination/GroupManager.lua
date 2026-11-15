@@ -78,6 +78,11 @@ function Coordination.RequestLayerHop(targetLayer, preferredProtocol)
         pcall(ULO.Interop.Overlord.BroadcastHopRequest, targetLayer)
     end
 
+    -- Request hop from known Guild / NWB / TresLayerSwap / LayerHopper peers if available
+    if ULO.Interop and ULO.Interop.Guild and type(ULO.Interop.Guild.BroadcastHopRequest) == "function" then
+        pcall(ULO.Interop.Guild.BroadcastHopRequest, targetLayer)
+    end
+
     return true, "ok"
 end
 

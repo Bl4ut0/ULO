@@ -16,8 +16,68 @@ local C = ULO.Constants
 local Compat = ULO.Compat
 
 local autoInviteEnabled = true
+local guildInviteEnabled = true
+local leatrixHooked = false
 local playerInviteCache = {}  -- [sender] = expireTimestamp (300s throttle)
 local pendingInviteSlots = {} -- [sender] = expireTimestamp (180s expiration)
+
+--- Synchronizes coexistence guard with Leatrix Plus ('Leatrix_Plus') whisper auto-invites
+-- so Leatrix Plus does not blindly invite players on mismatched layers or during refresh lockouts.
+-- @return boolean: true if Leatrix Plus whisper auto-invite is guarded/hooked
+function Coordination.SyncLeatrixPlusGuard()
+    if type(_G.LeaPlusLC) == "table" then
+        if _G.LeaPlusLC["InviteFromWhisper"] == "On" then
+            _G.LeaPlusLC._uloOrigInviteFromWhisper = "On"
+            _G.LeaPlusLC["InviteFromWhisper"] = "Off"
+            if type(_G.LeaPlusDB) == "table" then
+                _G.LeaPlusDB["InviteFromWhisper"] = "Off"
+            end
+            if type(_G.LeaPlusCB) == "table" and _G.LeaPlusCB["InviteFromWhisper"] and type(_G.LeaPlusCB["InviteFromWhisper"].GetScript) == "function" then
+                local onClick = _G.LeaPlusCB["InviteFromWhisper"]:GetScript("OnClick")
+                if type(onClick) == "function" then
+                    pcall(onClick, _G.LeaPlusCB["InviteFromWhisper"])
+                end
+            end
+            leatrixHooked = true
+            if type(ULO.LogAction) == "function" then
+                ULO.LogAction("Leatrix+", "Guarded Leatrix Plus whisper auto-invite (managed by ULO)")
+            end
+        elseif _G.LeaPlusLC._uloOrigInviteFromWhisper == "On" then
+            leatrixHooked = true
+        end
+    end
+    return leatrixHooked
+end
+
+--- Returns whether Leatrix Plus whisper auto-invite coexistence guard is active.
+-- @return boolean
+function Coordination.IsLeatrixPlusHooked()
+    return leatrixHooked
+end
+
+--- Enables or disables Guild Chat ('CHAT_MSG_GUILD') layer hop auto-invites.
+-- @param enable boolean|nil: Explicit enable state or nil to toggle
+-- @return boolean: Updated guild auto-invite state
+function Coordination.SetGuildInviteEnabled(enable)
+    if enable == nil then
+        guildInviteEnabled = not guildInviteEnabled
+    else
+        guildInviteEnabled = (enable == true)
+    end
+    if type(_G.ULODB) == "table" then
+        _G.ULODB.guildInviteEnabled = guildInviteEnabled
+    end
+    return guildInviteEnabled
+end
+
+--- Returns whether Guild Chat auto-invites are enabled.
+-- @return boolean
+function Coordination.IsGuildInviteEnabled()
+    if type(_G.ULODB) == "table" and _G.ULODB.guildInviteEnabled ~= nil then
+        return _G.ULODB.guildInviteEnabled == true
+    end
+    return guildInviteEnabled
+end
 
 --- Toggles or sets automated party invite processing.
 -- @param enable boolean|nil: Explicit enable state or nil to toggle
@@ -31,6 +91,7 @@ function Coordination.ToggleAutoInvite(enable)
     if type(_G.ULODB) == "table" then
         _G.ULODB.autoInvite = autoInviteEnabled
     end
+    Coordination.SyncLeatrixPlusGuard()
     return autoInviteEnabled
 end
 
@@ -97,7 +158,7 @@ end
 -- @param source string|nil: Originating system tag (defaults to "Direct Whisper")
 -- @return boolean: true if invite successfully dispatched
 -- @return string|nil: Error or rejection reason
-function Coordination.HandleWhisper(sender, msg, source)
+function Coordination.HandleWhisper(sender, msg, source, strictChat)
     source = source or "Direct Whisper"
     -- Guard 1: Auto-invite globally disabled
     if not autoInviteEnabled then
@@ -130,8 +191,12 @@ function Coordination.HandleWhisper(sender, msg, source)
         return false, "cached"
     end
 
-    -- Guard 6: Keyword & target layer recognition
-    local match, targetLayerOrReason, isInverted, r1, r2 = Coordination.MatchKeywords(msg)
+    -- Guard 6: Keyword & target layer recognition (strict intent required for Guild/Channel chat)
+    local useStrict = (strictChat == true) or (source == "Guild Chat")
+    local matcher = (useStrict and type(Coordination.MatchChatRequest) == "function")
+        and Coordination.MatchChatRequest
+        or Coordination.MatchKeywords
+    local match, targetLayerOrReason, isInverted, r1, r2 = matcher(msg)
     if not match then
         return false, targetLayerOrReason or "no_match"
     end
@@ -182,12 +247,29 @@ function Coordination.HandleWhisper(sender, msg, source)
     return false, err
 end
 
--- Event Listener: Inbound whisper frame
+-- Event Listener: Inbound whisper & guild chat frame
 if type(_G.CreateFrame) == "function" then
     local whisperFrame = _G.CreateFrame("Frame", "ULO_InviteManagerFrame")
     whisperFrame:RegisterEvent("CHAT_MSG_WHISPER")
+    whisperFrame:RegisterEvent("CHAT_MSG_GUILD")
+    whisperFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     whisperFrame:SetScript("OnEvent", function(self, event, msg, sender)
-        if event ~= "CHAT_MSG_WHISPER" then return end
+        if event == "PLAYER_ENTERING_WORLD" then
+            Coordination.SyncLeatrixPlusGuard()
+            return
+        elseif event == "CHAT_MSG_GUILD" then
+            if not Coordination.IsGuildInviteEnabled() then return end
+            if type(msg) ~= "string" or type(sender) ~= "string" or sender == "" then return end
+            local playerName = type(_G.UnitName) == "function" and _G.UnitName("player")
+            local shortSender = string.match(sender, "^([^%-]+)") or sender
+            if playerName and (sender == playerName or shortSender == playerName) then
+                return
+            end
+            Coordination.HandleWhisper(sender, msg, "Guild Chat", true)
+            return
+        elseif event ~= "CHAT_MSG_WHISPER" then
+            return
+        end
         local src = "Direct Whisper"
         if type(msg) == "string" and (not Compat or not Compat.SafeString or Compat.SafeString(msg)) then
             local lowerMsg = string.lower(msg)

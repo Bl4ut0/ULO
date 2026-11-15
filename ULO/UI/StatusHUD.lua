@@ -317,6 +317,9 @@ function ULO.SetULOOnlyMode(enabled)
     elseif flag and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
         pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
     end
+    if ULO.Coordination and type(ULO.Coordination.SyncLeatrixPlusGuard) == "function" then
+        ULO.Coordination.SyncLeatrixPlusGuard()
+    end
 
     ULO.LogAction("Mode", flag
         and "ULO ONLY mode ON (ignoring AutoLayer & Overlord invites)"
@@ -1364,6 +1367,9 @@ if type(_G.CreateFrame) == "function" then
                     ULO.Interop.Overlord.SyncHelpMode()
                 elseif ULO.IsULOOnlyMode() and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
                     pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
+                end
+                if ULO.Coordination and type(ULO.Coordination.SyncLeatrixPlusGuard) == "function" then
+                    ULO.Coordination.SyncLeatrixPlusGuard()
                 end
                 if #ULO.GetActionLog() == 0 then
                     ULO.LogAction("Core", "Ready: click L1-L8, Hop Any, or Scan NPCs")
