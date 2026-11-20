@@ -10,6 +10,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+function Get-ArchiveSha256([string]$FilePath) {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($FilePath)
+    try { return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $hasher.Dispose() }
+}
+
 function Get-VersionFromToc {
     param([string]$TocPath)
     if (-not (Test-Path $TocPath)) {
@@ -50,7 +57,7 @@ if ($UseExisting) {
     $checksumPath = "$zipPath.sha256"
     if (-not (Test-Path $checksumPath)) { throw 'Existing release checksum is missing.' }
     $checksum = (Get-Content -Raw -LiteralPath $checksumPath).Trim() -split '\s+'
-    if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $checksum[0]) { throw 'Existing release ZIP checksum mismatch.' }
+    if ((Get-ArchiveSha256 $zipPath) -ne $checksum[0]) { throw 'Existing release ZIP checksum mismatch.' }
 } else {
     # Archive the commit with a pathspec so commit timestamps are retained.
     & git -C $RepoRoot -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$zipPath" $commitSha ULO
@@ -133,7 +140,7 @@ try {
     }
 } finally { $verifyZip.Dispose() }
 
-$zipHashHex = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$zipHashHex = Get-ArchiveSha256 $zipPath
 
 Set-Content -Path (Join-Path $versionsDir 'SOURCE_COMMIT.txt') -Value $commitSha -Encoding UTF8
 Set-Content -Path (Join-Path $versionsDir 'SOURCE_TREE.txt') -Value ($treeLines -join "`n") -Encoding UTF8
