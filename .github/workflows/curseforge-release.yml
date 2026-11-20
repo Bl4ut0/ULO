@@ -1,75 +1,135 @@
-name: Release Package & CurseForge Publish
+name: Verify and publish ULO
 
 on:
+  push:
+    branches: [main, dev]
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (e.g. v1.0.0)
+        description: Immutable release tag (for example v1.0.1-beta.1)
         required: true
+        type: string
       channel:
-        description: Release channel
+        description: CurseForge release channel
         required: true
-        default: stable
+        default: beta
         type: choice
-        options:
-          - stable
-          - beta
+        options: [beta, stable]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ulo-${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  package-and-publish:
-    runs-on: windows-latest
+  verify:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.ref }}
           fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Validate Lua syntax and addon structure
+          node-version: '22'
+      - name: Install test dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+      - name: Run full validation gate
         run: |
           npm run validate:lua
           npm run validate:structure
+          npm run test:release
+          ULO_PROJECT_ROOT="$GITHUB_WORKSPACE" lua5.1 Tests/TestHarness.lua
 
-      - name: Resolve version and channel
+  publish:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+      CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID || secrets.CURSEFORGE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Resolve immutable release
         id: meta
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: node .tools/release_metadata.js
+      - name: Require configured CurseForge destination
         shell: pwsh
         run: |
-          $tag = "${{ github.event.release.tag_name || github.event.inputs.tag }}"
-          $version = $tag.TrimStart('v', 'V')
-          $isPrerelease = "${{ github.event.release.prerelease }}" -eq "true" -or "$version" -like "*-*"
-          $channel = "${{ github.event.inputs.channel }}"
-          if ([string]::IsNullOrWhiteSpace($channel)) {
-            $channel = if ($isPrerelease) { "beta" } else { "stable" }
+          if ([string]::IsNullOrWhiteSpace($env:CURSEFORGE_API_TOKEN) -or $env:CURSEFORGE_PROJECT_ID -notmatch '^\d+$') {
+            throw 'Configure CURSEFORGE_API_TOKEN secret and CURSEFORGE_PROJECT_ID variable before publishing.'
           }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Build immutable release archive
-        run: node .tools/create_release.js build ${{ steps.meta.outputs.channel }} ${{ steps.meta.outputs.version }} --ref ${{ github.sha }}
-
-      - name: Upload GitHub Release Assets
-        if: github.event_name == 'release'
+      - name: Build or verify immutable addon ZIP with assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
+        shell: pwsh
         run: |
-          gh release upload "${{ steps.meta.outputs.tag }}" ".versions/${{ steps.meta.outputs.version }}/ULO-v${{ steps.meta.outputs.version }}.zip" ".versions/${{ steps.meta.outputs.version }}/ULO-v${{ steps.meta.outputs.version }}.zip.sha256" --clobber
-
-      - name: Publish to CurseForge
-        if: env.CURSEFORGE_API_TOKEN != '' && env.CURSEFORGE_PROJECT_ID != ''
+          $release = gh release view "$env:RELEASE_TAG" --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'The tagged GitHub release must exist.' }
+          $zip = "ULO-v$env:RELEASE_VERSION.zip"
+          $hasZip = $zip -in $release.assets.name
+          $hasChecksum = "$zip.sha256" -in $release.assets.name
+          if ($hasZip -ne $hasChecksum) { throw 'Existing release has an incomplete ZIP/checksum pair.' }
+          if ($hasZip) {
+            gh release download "$env:RELEASE_TAG" --pattern "$zip" --pattern "$zip.sha256" --dir ".versions/$env:RELEASE_VERSION"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to retrieve immutable release assets.' }
+            node .tools/create_release.js build "$env:RELEASE_CHANNEL" "$env:RELEASE_VERSION" --ref HEAD --existing
+          } else {
+            node .tools/create_release.js build "$env:RELEASE_CHANNEL" "$env:RELEASE_VERSION" --ref HEAD
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Release archive verification failed.' }
+      - name: Restore prior upload receipt if present
+        continue-on-error: true
         env:
-          CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
-          CURSEFORGE_PROJECT_ID: ${{ secrets.CURSEFORGE_PROJECT_ID }}
-        run: node .tools/curseforge_upload.js --file ".versions/${{ steps.meta.outputs.version }}/ULO-v${{ steps.meta.outputs.version }}.zip" --version "${{ steps.meta.outputs.version }}" --channel "${{ steps.meta.outputs.channel }}" --notes ".versions/${{ steps.meta.outputs.version }}/CURSEFORGE_RELEASE.md"
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: gh release download "$env:RELEASE_TAG" --pattern CURSEFORGE_UPLOAD.json --dir ".versions/$env:RELEASE_VERSION"
+      - name: Publish exact archive to CurseForge
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: node .tools/curseforge_upload.js --file ".versions/$env:RELEASE_VERSION/ULO-v$env:RELEASE_VERSION.zip" --version "$env:RELEASE_VERSION" --channel "$env:RELEASE_CHANNEL" --notes ".versions/$env:RELEASE_VERSION/CURSEFORGE_RELEASE.md" --receipt ".versions/$env:RELEASE_VERSION/CURSEFORGE_UPLOAD.json"
+      - name: Attach missing GitHub assets without replacing published files
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        shell: pwsh
+        run: |
+          $existing = gh release view "$env:RELEASE_TAG" --json assets | ConvertFrom-Json
+          foreach ($name in @("ULO-v$env:RELEASE_VERSION.zip", "ULO-v$env:RELEASE_VERSION.zip.sha256", 'CURSEFORGE_UPLOAD.json')) {
+            if ($name -notin $existing.assets.name) {
+              gh release upload "$env:RELEASE_TAG" ".versions/$env:RELEASE_VERSION/$name"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to attach $name" }
+            }
+          }
+      - name: Preserve verified build and upload receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ULO-${{ steps.meta.outputs.version }}
+          path: .versions/${{ steps.meta.outputs.version }}/
+          if-no-files-found: ignore

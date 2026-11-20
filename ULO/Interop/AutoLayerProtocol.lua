@@ -19,6 +19,30 @@ local Compat = ULO.Compat
 
 -- Internal State
 local failedChannels = {}
+local ownedChannels = {}
+local joinedDay
+
+local function DateFormats()
+    local t
+    if type(_G.C_DateAndTime) == "table" and type(_G.C_DateAndTime.GetCurrentCalendarTime) == "function" then
+        local ok, value = pcall(_G.C_DateAndTime.GetCurrentCalendarTime)
+        if ok and type(value) == "table" and not Compat.IsSecretValue(value) then t = value end
+    end
+    local day, month, year
+    if t and not Compat.IsSecretValue(t.monthDay) and not Compat.IsSecretValue(t.month) and not Compat.IsSecretValue(t.year) then
+        day, month, year = tonumber(t.monthDay), tonumber(t.month), tonumber(t.year)
+    end
+    if not (day and month and year) and type(_G.date) == "function" then
+        local ok, value = pcall(_G.date, "%d-%m-%Y")
+        value = ok and Compat.SafeString(value)
+        if value then day, month, year = string.match(value, "^(%d%d)%-(%d%d)%-(%d%d%d%d)$") end
+        day, month, year = tonumber(day), tonumber(month), tonumber(year)
+    end
+    if not (day and month and year) or day < 1 or day > 31 or month < 1 or month > 12
+       or year < 1970 or year > 3000 or day % 1 ~= 0 or month % 1 ~= 0 or year % 1 ~= 0 then return {} end
+    return { string.format("%02d-%02d-%04d", day, month, year), string.format("%04d-%02d-%02d", year, month, day),
+        string.format("%02d-%02d-%04d", month, day, year) }
+end
 
 --- Calculates an Adler32 checksum string formatted as an 8-character hex string.
 -- @param str string: Input string to hash
@@ -38,46 +62,51 @@ AutoLayer.Adler32 = Adler32
 
 --- Generates the date-salted AutoLayer channel name.
 -- @param realm string|nil: Target realm name (defaults to current realm or "Camelot")
--- @param dateStr string|nil: Target date string (defaults to "14-11-2026")
+-- @param dateStr string|nil: Target date string (defaults to server calendar day)
 -- @return string: Channel name matching "layer<8-hex>"
 function AutoLayer.GenerateChannelName(realm, dateStr)
     if not realm or realm == "" then
-        realm = (type(_G.GetRealmName) == "function" and _G.GetRealmName()) or "Camelot"
+        if type(_G.GetRealmName) == "function" then
+            local ok, value = pcall(_G.GetRealmName)
+            realm = ok and value or nil
+        end
     end
+    realm = Compat.SafeString(realm)
+    if not realm then return nil end
     if not dateStr or dateStr == "" then
-        dateStr = (type(_G.date) == "function" and _G.date("%d-%m-%Y")) or "14-11-2026"
+        dateStr = DateFormats()[1]
     end
+    dateStr = Compat.SafeString(dateStr)
+    if not dateStr then return nil end
 
     local seed = realm .. "-" .. dateStr
     local hash = Adler32(seed)
     return "layer" .. hash
 end
 
---- Joins today's dynamic date-salted AutoLayer channel (falling back to static 'layer' only if failed/headless).
--- @return string: Today's dynamic channel name
+--- Subscribe to static layer plus all three upstream daily date formats.
+-- Requests still use one active channel to avoid multiplying invitations.
 function AutoLayer.JoinChannels()
-    local todayChannel = AutoLayer.GenerateChannelName()
-    local useStaticFallback = AutoLayer.IsChannelFailed(todayChannel) or (type(_G.GetChannelName) ~= "function")
-    if type(_G.JoinChannelByName) == "function" then
-        pcall(_G.JoinChannelByName, todayChannel)
-        if useStaticFallback then
-            pcall(_G.JoinChannelByName, "layer")
+    local valid = {}
+    joinedDay = DateFormats()[1]
+    local managed = AutoLayer.GetManagedChannels()
+    for _, channel in ipairs(managed) do
+        valid[channel] = true
+        if not AutoLayer.IsChannelFailed(channel) and type(_G.JoinChannelByName) == "function" then
+            local ok = pcall(_G.JoinChannelByName, channel)
+            if ok then ownedChannels[channel] = true end
         end
     end
-    if not useStaticFallback and type(_G.GetChannelName) == "function" and type(_G.LeaveChannelByName) == "function" then
-        local ok, slot = pcall(_G.GetChannelName, "layer")
-        if ok and type(slot) == "number" and slot > 0 then
-            pcall(_G.LeaveChannelByName, "layer")
+    for channel in pairs(ownedChannels) do
+        if not valid[channel] and channel ~= "layer" and type(_G.LeaveChannelByName) == "function" then
+            pcall(_G.LeaveChannelByName, channel)
+            ownedChannels[channel], failedChannels[channel] = nil, nil
         end
     end
     if type(ULO.LogAction) == "function" then
-        if useStaticFallback then
-            ULO.LogAction("Channel", "Joined /layer and /" .. tostring(todayChannel))
-        else
-            ULO.LogAction("Channel", "Joined /" .. tostring(todayChannel))
-        end
+        ULO.LogAction("Channel", "Subscribed to " .. #managed .. " compatible layer channels")
     end
-    return todayChannel
+    return AutoLayer.GenerateChannelName() or "layer"
 end
 
 --- Marks a channel as failed (e.g. password-protected or unavailable).
@@ -96,12 +125,16 @@ function AutoLayer.IsChannelFailed(ch)
 end
 
 --- Retrieves the list of channels managed by AutoLayer interop.
--- @return table: Array of channel names {"layer", todayChannel}
+-- @return table: Unique channel names in upstream preference order
 function AutoLayer.GetManagedChannels()
     local list = { "layer" }
-    local today = AutoLayer.GenerateChannelName()
-    if today ~= "layer" then
-        table.insert(list, today)
+    local seen = { layer = true }
+    for _, dateStr in ipairs(DateFormats()) do
+        local channel = AutoLayer.GenerateChannelName(nil, dateStr)
+        if channel and not seen[channel] then
+            seen[channel] = true
+            list[#list + 1] = channel
+        end
     end
     return list
 end
@@ -136,15 +169,12 @@ function AutoLayer.LeaveExcessChannels(slotChecker)
                 pcall(_G.LeaveChannelByName, ch)
                 table.insert(departed, ch)
             end
-        elseif not slotChecker and slot == nil and not _G.GetChannelName then
-            -- Fallback when GetChannelName is not present in environment
-            if type(_G.LeaveChannelByName) == "function" then
-                pcall(_G.LeaveChannelByName, ch)
-                table.insert(departed, ch)
-            end
         end
     end
 
+    if #departed > 0 and type(_G.C_Timer) == "table" and type(_G.C_Timer.After) == "function" then
+        _G.C_Timer.After(30, AutoLayer.JoinChannels)
+    end
     return departed
 end
 
@@ -208,6 +238,7 @@ end
 function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
     mapID = mapID or (type(_G.C_Map) == "table" and _G.C_Map.GetBestMapForUnit and _G.C_Map.GetBestMapForUnit("player")) or 947
     local uloOnly = (_G.ULODB and _G.ULODB.uloOnlyMode == true)
+        or (ULO.IsTrackEnabled and not ULO.IsTrackEnabled("autoLayer") and ULO.IsTrackEnabled("ulo"))
     local seg = "AZ"
     if uloOnly then
         seg = "ULO"
@@ -217,46 +248,46 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
 
     local formatted
     local lNum = tonumber(targetLayer)
+    local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
+        and tonumber(ULO.Detection.GetCurrentLayer()) or nil
+    if ULO.IsTrackEnabled and not ULO.IsTrackEnabled(uloOnly and "ulo" or "autoLayer") then
+        return nil, 0, "disabled"
+    end
+    if not uloOnly and ((_G.ULODB and _G.ULODB.autoLayerEnabled == false)
+       or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false)) then
+        return nil, 0, "disabled"
+    end
+    if lNum and myLayer == lNum then return nil, 0, "already_on_layer" end
     if lNum then
         formatted = string.format("<%s> inv layer %d", seg, lNum)
-    elseif seg == "ULO" then
-        local myLayer = ULO.Detection and type(ULO.Detection.GetCurrentLayer) == "function"
-            and ULO.Detection.GetCurrentLayer() or nil
-        if tonumber(myLayer) then
-            formatted = string.format("<ULO> inv not layer %d", tonumber(myLayer))
-        else
-            formatted = "<ULO> inv layer"
-        end
+    elseif myLayer and myLayer > 0 then
+        formatted = string.format("<%s> inv not layer %d", seg, myLayer)
     else
-        formatted = string.format("<%s> inv layer", seg)
+        return nil, 0, "layer_unknown"
+    end
+    if Compat.IsTBC() and not uloOnly then
+        local zone = ULO.Intelligence.GetZone()
+        if not zone then return nil, 0, "zone_unknown" end
+        -- AL2's minimum zone-aware wire capability (1.9.5), not ULO's version.
+        formatted = "<AL2V1_9_5Z" .. zone .. "> " .. (lNum and ("inv layer " .. lNum) or ("inv not layer " .. myLayer))
     end
 
     local sentSlots = {}
     if type(_G.SendChatMessage) == "function" then
         if type(_G.GetChannelName) == "function" then
-            local todayCh = AutoLayer.GenerateChannelName()
             local seenSlot = {}
-            local fallbackSlot = nil
-            for _, chName in ipairs({ todayCh, "layer" }) do
+            for _, chName in ipairs(AutoLayer.GetManagedChannels()) do
                 local ok, id = pcall(_G.GetChannelName, chName)
-                if ok and type(id) == "number" and id > 0 and not seenSlot[id] then
+                if not AutoLayer.IsChannelFailed(chName) and ok and type(id) == "number" and id > 0 and not seenSlot[id] then
                     seenSlot[id] = true
                     if not AutoLayer.IsSlotProtected(id) then
                         table.insert(sentSlots, id)
                         if #sentSlots >= 1 then
                             break
                         end
-                    elseif not fallbackSlot then
-                        fallbackSlot = id
                     end
                 end
             end
-            if #sentSlots == 0 and fallbackSlot then
-                table.insert(sentSlots, fallbackSlot)
-            end
-        else
-            -- Headless test harness environments without GetChannelName default to channel 1
-            table.insert(sentSlots, 1)
         end
         for _, slotId in ipairs(sentSlots) do
             pcall(_G.SendChatMessage, formatted, "CHANNEL", nil, slotId)
@@ -275,7 +306,7 @@ function AutoLayer.FormatBroadcastMessage(targetLayer, mapID)
             ULO.LogAction(tag, string.format("Prepared %q (no channel slot)", formatted))
         end
     end
-    return formatted
+    return formatted, #sentSlots
 end
 
 -- Calendar rollover, initial join, and channel hop request listener frame
@@ -285,6 +316,17 @@ if type(_G.CreateFrame) == "function" then
         autoLayerFrame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
         autoLayerFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         autoLayerFrame:RegisterEvent("CHAT_MSG_CHANNEL")
+        local calendarElapsed = 0
+        autoLayerFrame:SetScript("OnUpdate", function(_, elapsed)
+            calendarElapsed = calendarElapsed + elapsed
+            if calendarElapsed >= 30 then
+                calendarElapsed = 0
+                if DateFormats()[1] ~= joinedDay then
+                    AutoLayer.JoinChannels()
+                    AutoLayer.LeaveExcessChannels()
+                end
+            end
+        end)
         autoLayerFrame:SetScript("OnEvent", function(self, event, ...)
             if event == "CALENDAR_UPDATE_EVENT_LIST" then
                 AutoLayer.JoinChannels()
@@ -301,22 +343,30 @@ if type(_G.CreateFrame) == "function" then
                 end
             elseif event == "CHAT_MSG_CHANNEL" then
                 local msg, sender, _, channelName, _, _, _, _, channelBaseName = ...
-                if type(msg) ~= "string" or type(sender) ~= "string" or sender == "" then
+                if type(msg) ~= "string" or type(sender) ~= "string" then
+                    return
+                end
+                -- Chat text and names may remain strings while being secret.
+                -- Validate before equality, patterns, case conversion or logging.
+                msg, sender = Compat.SafeString(msg), Compat.SafeString(sender)
+                if not msg or not sender or sender == "" then
                     return
                 end
 
-                local playerName = type(_G.UnitName) == "function" and _G.UnitName("player")
-                local shortSender = string.match(sender, "^([^%-]+)") or sender
-                if playerName and (sender == playerName or shortSender == playerName) then
-                    return
-                end
+                if Compat and Compat.IsSelfName and Compat.IsSelfName(sender) then return end
 
-                local base = string.lower(tostring(channelBaseName or channelName or ""))
-                if base == "" or not (base == "layer" or string.match(base, "^layer%x%x%x%x%x%x%x%x$")) then
+                local base
+                if type(channelBaseName) == "nil" then
+                    base = Compat.SafeLower(channelName)
+                else
+                    base = Compat.SafeLower(channelBaseName)
+                end
+                if not base or base == "" or not (base == "layer" or string.match(base, "^layer%x%x%x%x%x%x%x%x$")) then
                     return
                 end
 
                 local isULOMsg = string.match(msg, "^%s*<ULO>%s*inv") ~= nil
+                if ULO.IsTrackEnabled and not ULO.IsTrackEnabled(isULOMsg and "ulo" or "autoLayer") then return end
                 local sourceTag = isULOMsg and "ULO Chan" or "AutoLayer"
                 if not isULOMsg and ((_G.ULODB and (_G.ULODB.autoLayerEnabled == false or _G.ULODB.uloOnlyMode == true))
                    or (_G.ULO_CONFIG and _G.ULO_CONFIG.interop and _G.ULO_CONFIG.interop.autoLayerEnabled == false)) then
@@ -326,22 +376,24 @@ if type(_G.CreateFrame) == "function" then
                     return
                 end
 
-                local seg, targetLayer = AutoLayer.ParseMessage(msg)
+                local seg, targetLayer, _, scope = AutoLayer.ParseMessage(msg)
+                scope = scope or tonumber(string.match(msg, "^%s*<AL2V[%d_]+Z(%d+)>"))
+                if scope and not ULO.Intelligence.RequestZoneAllowed(sender, scope, true) then return end
                 local coord = ULO.Coordination
                 if seg and targetLayer then
                     if coord and type(coord.HandleWhisper) == "function" then
-                        coord.HandleWhisper(sender, string.format("inv layer %d", targetLayer), sourceTag)
+                        coord.HandleWhisper(sender, string.format("inv layer %d", targetLayer), sourceTag, false, scope)
                     end
                 else
                     local exLayer = string.match(msg, "^%s*<[A-Z0-9_.]+>%s*inv%s+not%s+layer%s+(%d+)%s*$")
                     local isAnyHeaderHop = (not exLayer) and (string.match(msg, "^%s*<[A-Z0-9_.]+>%s*inv%s+layer%s*$") ~= nil)
                     if exLayer then
                         if coord and type(coord.HandleWhisper) == "function" then
-                            coord.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)), sourceTag)
+                            coord.HandleWhisper(sender, string.format("not layer %d", tonumber(exLayer)), sourceTag, false, scope)
                         end
                     elseif isAnyHeaderHop then
                         if coord and type(coord.HandleWhisper) == "function" then
-                            coord.HandleWhisper(sender, "inv layer", sourceTag)
+                            coord.HandleWhisper(sender, "inv layer", sourceTag, false, scope)
                         end
                     elseif not string.match(msg, "^%s*<") and coord
                            and type(coord.HandleWhisper) == "function" then

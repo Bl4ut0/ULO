@@ -23,6 +23,11 @@ local isSyncing = false
 local guildPeers = {}
 local ADDON_PREFIXES = { "ULO", "TresLayerSwap", "LayerHopper" }
 
+local function SourceEnabled(source)
+    local track = ({ ULO = "ulo", NWB = "nwb", TresLayerSwap = "tresLayerSwap", LayerHopper = "layerHopper" })[source or "ULO"]
+    return not ULO.IsTrackEnabled or (track ~= nil and ULO.IsTrackEnabled(track))
+end
+
 local function ShortKey(name)
     if type(name) ~= "string" or name == "" then return nil end
     local short = string.match(name, "^([^%-]+)") or name
@@ -45,6 +50,7 @@ RegisterExtraPrefixes()
 --- Synchronizes internal layer detection state from NovaWorldBuffs globals.
 -- Employs reentrancy guard to prevent recursive update loops.
 function NWB.SyncWithNWB()
+    if not SourceEnabled("NWB") then return false end
     if isSyncing then return end
     isSyncing = true
 
@@ -85,6 +91,7 @@ end
 --- Safely accesses NovaWorldBuffs layer database table.
 -- @return table|nil: Layers database or nil if absent/corrupted
 function NWB.GetNWBLayerData()
+    if not SourceEnabled("NWB") then return nil end
     if type(_G.NWB_GetLayerData) == "function" then
         local ok, data = pcall(_G.NWB_GetLayerData)
         if ok and type(data) == "table" then
@@ -101,6 +108,7 @@ end
 -- @param zoneId number|string: Creature GUID token 5 (zone instance ID)
 -- @return number|nil: Resolved layer number (1..N) or nil
 function NWB.ResolveLayerFromZoneID(zoneId)
+    if not SourceEnabled("NWB") then return nil end
     local zNum = tonumber(zoneId)
     if not zNum or zNum <= 0 then return nil end
     local zStr = tostring(zNum)
@@ -143,18 +151,19 @@ end
 -- @param serverId number|nil: Peer server/shard ID
 -- @param isHelper boolean|nil: Whether peer has auto-invite active
 -- @param source string|nil: Originating prefix ("ULO", "NWB", "TresLayerSwap", "LayerHopper")
-function Guild.RecordPeer(name, layer, serverId, isHelper, source)
-    local k = ShortKey(name)
+function Guild.RecordPeer(name, layer, serverId, isHelper, source, zone, version)
+    if not SourceEnabled(source) or (Compat and Compat.IsSelfName and Compat.IsSelfName(name)) then return end
+    local k = ULO.Intelligence.PeerKey(name)
     if not k then return end
-    local now = (type(_G.GetTime) == "function" and _G.GetTime()) or 0
-    guildPeers[k] = {
-        name = name,
-        layer = tonumber(layer),
-        serverId = tonumber(serverId),
-        helper = (isHelper ~= false),
-        source = source or "ULO",
-        updatedAt = now,
-    }
+    local existing = guildPeers[k]
+    if source == "NWB" and existing and existing.source == "ULO"
+       and (type(_G.GetTime) == "function" and _G.GetTime() or 0) - existing.updatedAt <= ULO.Intelligence.PEER_TTL then
+        return -- An observation cannot replace a fresh explicit helper preference.
+    end
+    -- NWB observations and unvalidated external status formats do not advertise
+    -- consent or a proven invitation capability.
+    guildPeers[k] = ULO.Intelligence.RecordPeer(name, layer, serverId,
+        (source == nil or source == "ULO") and isHelper == true, zone, version, source)
 end
 
 --- Returns known guild and NWB peers filtered by target layer (or any different layer when nil).
@@ -169,7 +178,7 @@ function NWB.GetKnownLayerPeers(targetLayer)
     local uloOnly = (_G.ULODB and _G.ULODB.uloOnlyMode == true)
 
     -- Harvest any live player layer entries exposed by NWB database tables
-    if type(_G.NWBdatabase) == "table" then
+    if SourceEnabled("NWB") and type(_G.NWBdatabase) == "table" then
         for _, tblKey in ipairs({ "guildLayers", "playerLayers" }) do
             local tbl = _G.NWBdatabase[tblKey]
             if type(tbl) == "table" then
@@ -185,7 +194,14 @@ function NWB.GetKnownLayerPeers(targetLayer)
 
     local out = {}
     for k, row in pairs(guildPeers) do
-        if k ~= selfKey and (not uloOnly or row.source == "ULO") then
+        local zoneStatus = ULO.Intelligence.PeerZoneStatus(row.name)
+        if k ~= selfKey and SourceEnabled(row.source) and row.helper ~= false
+           and not (Compat and Compat.IsSelfName and Compat.IsSelfName(row.name))
+           and ((type(_G.GetTime) == "function" and _G.GetTime() or 0) - row.updatedAt <= ULO.Intelligence.PEER_TTL)
+           and zoneStatus ~= "zone_mismatch" and zoneStatus ~= "zone_unknown"
+           and (row.version ~= 2 or not ULO.Intelligence.RequiresZone() or zoneStatus == "same_zone")
+           and (not uloOnly or row.source == "ULO") then
+            row.zoneStatus = zoneStatus
             local pLayer = tonumber(row.layer)
             local pSid = tonumber(row.serverId)
             local okLayer = false
@@ -203,6 +219,7 @@ function NWB.GetKnownLayerPeers(targetLayer)
     end
 
     table.sort(out, function(a, b)
+        if (a.zoneStatus == "same_zone") ~= (b.zoneStatus == "same_zone") then return a.zoneStatus == "same_zone" end
         if (a.helper and 1 or 0) ~= (b.helper and 1 or 0) then
             return a.helper == true
         end
@@ -219,11 +236,14 @@ Guild.GetKnownPeers = NWB.GetKnownLayerPeers
 --- Broadcasts the player's current layer state over the silent 'ULO' GUILD addon channel.
 -- @return boolean: true if status packet dispatched
 function Guild.BroadcastLayer()
+    if not SourceEnabled("ULO") then return false end
     local Detection = ULO.Detection
     local myLayer = Detection and type(Detection.GetCurrentLayer) == "function" and Detection.GetCurrentLayer() or tonumber(_G.NWB_CurrentLayer) or 0
     local mySid = Detection and type(Detection.GetCurrentServerId) == "function" and Detection.GetCurrentServerId() or 0
     local autoInv = not ULO.Coordination or type(ULO.Coordination.IsAutoInviteEnabled) ~= "function" or ULO.Coordination.IsAutoInviteEnabled()
     local payload = string.format("S:%d:%d:%d", tonumber(myLayer) or 0, tonumber(mySid) or 0, autoInv and 1 or 0)
+    local zonePayload = string.format("S2:%d:%d:%d:%d", tonumber(myLayer) or 0, tonumber(mySid) or 0,
+        autoInv and 1 or 0, ULO.Intelligence.GetZone() or 0)
 
     if type(_G.IsInGuild) == "function" and not _G.IsInGuild() then
         return false
@@ -231,9 +251,11 @@ function Guild.BroadcastLayer()
 
     if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.SendAddonMessage) == "function" then
         pcall(_G.C_ChatInfo.SendAddonMessage, "ULO", payload, "GUILD")
+        pcall(_G.C_ChatInfo.SendAddonMessage, "ULO", zonePayload, "GUILD")
         return true
     elseif type(_G.SendAddonMessage) == "function" then
         pcall(_G.SendAddonMessage, "ULO", payload, "GUILD")
+        pcall(_G.SendAddonMessage, "ULO", zonePayload, "GUILD")
         return true
     end
     return false
@@ -246,19 +268,20 @@ end
 -- @param sender string: Sender character name
 -- @return boolean: true if message was recognized and processed
 function Guild.ProcessAddonMessage(prefix, msg, channel, sender)
-    if type(prefix) ~= "string" or type(msg) ~= "string" or msg == "" or type(sender) ~= "string" or sender == "" then
+    if type(prefix) ~= "string" or type(msg) ~= "string" or type(sender) ~= "string" then
         return false
     end
-    if Compat and Compat.SafeString and not Compat.SafeString(msg) then
-        return false
-    end
+    prefix, msg, sender = Compat.SafeString(prefix), Compat.SafeString(msg), Compat.SafeString(sender)
+    if not prefix or not msg or not sender or msg == "" or sender == "" then return false end
+    if not SourceEnabled(prefix) then return false end
+    if Compat and Compat.IsSelfName and Compat.IsSelfName(sender) then return false end
     if prefix ~= "ULO" and prefix ~= "TresLayerSwap" and prefix ~= "LayerHopper" then
         return false
     end
 
     local selfKey = ShortKey(type(_G.UnitName) == "function" and _G.UnitName("player") or nil)
     local senderKey = ShortKey(sender)
-    if selfKey and senderKey == selfKey then
+    if not (Compat and Compat.IsSelfName) and selfKey and senderKey == selfKey then
         return false
     end
 
@@ -270,7 +293,12 @@ function Guild.ProcessAddonMessage(prefix, msg, channel, sender)
         return false
     end
 
-    -- 1. Status announcements: S:<layer>:<serverId>:<helper> or LAYER:<layer> / STATUS:<layer>
+    local zLayer, zSid, zHelp, zone = string.match(msg, "^S2:(%d+):(%d+):([01]):(%d+)%s*$")
+    if zLayer and prefix == "ULO" then
+        Guild.RecordPeer(sender, tonumber(zLayer), tonumber(zSid), zHelp == "1", prefix, tonumber(zone), 2)
+        return true
+    end
+    -- 1. Legacy status announcements remain readable by old ULO clients.
     local sLayer, sSid, sHelp = string.match(msg, "^S:(%d+):(%d+):([01])%s*$")
     if sLayer then
         Guild.RecordPeer(sender, tonumber(sLayer), tonumber(sSid), sHelp == "1", prefix)
@@ -296,7 +324,9 @@ function Guild.ProcessAddonMessage(prefix, msg, channel, sender)
     local desiredLayer = nil
     local originLayer = nil
 
-    local rId, dTok, oTok = string.match(msg, "^R:([%w_]+):([%d%-]+):([%d%-]+)%s*$")
+    local rId, dTok, oTok, requestZone = string.match(msg, "^R2:([%w_]+):([%d%-]+):([%d%-]+):(%d+)%s*$")
+    local zoneAwareRequest = rId ~= nil
+    if not rId then rId, dTok, oTok = string.match(msg, "^R:([%w_]+):([%d%-]+):([%d%-]+)%s*$") end
     if rId then
         isHopReq = true
         desiredLayer = tonumber(dTok)
@@ -331,6 +361,8 @@ function Guild.ProcessAddonMessage(prefix, msg, channel, sender)
     if not isHopReq then
         return false
     end
+    local zoneOK = ULO.Intelligence.RequestZoneAllowed(sender, requestZone and tonumber(requestZone), zoneAwareRequest)
+    if not zoneOK then return false end
 
     local Coordination = ULO.Coordination
     if Coordination and type(Coordination.IsAutoInviteEnabled) == "function" and not Coordination.IsAutoInviteEnabled() then
@@ -394,7 +426,7 @@ end
 --- Dispatches a hop request to known Guild / NWB / TresLayerSwap / LayerHopper peers.
 -- @param targetLayer number|nil: Target layer number, or nil for any different layer
 -- @return number: Count of outbound addon hop messages sent (0 or 1)
-function Guild.BroadcastHopRequest(targetLayer)
+function Guild.BroadcastHopRequest(targetLayer, directOnly)
     local Detection = ULO.Detection
     local myLayer = Detection and type(Detection.GetCurrentLayer) == "function" and Detection.GetCurrentLayer() or tonumber(_G.NWB_CurrentLayer)
     local tgtStr = tonumber(targetLayer) and tostring(tonumber(targetLayer)) or "-"
@@ -403,23 +435,27 @@ function Guild.BroadcastHopRequest(targetLayer)
     local reqId = string.format("g%x", baseTime % 65535)
 
     local peers = NWB.GetKnownLayerPeers(targetLayer)
-    if #peers > 0 then
-        local best = peers[1]
+    for _, best in ipairs(peers) do
         local usePrefix = (best.source == "TresLayerSwap" or best.source == "LayerHopper") and best.source or "ULO"
-        local payload = (usePrefix == "ULO")
-            and string.format("R:%s:%s:%s", reqId, tgtStr, origStr)
-            or (tonumber(targetLayer) and ("REQ:" .. tostring(tonumber(targetLayer))) or "REQ")
-        if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.SendAddonMessage) == "function" then
-            pcall(_G.C_ChatInfo.SendAddonMessage, usePrefix, payload, "WHISPER", best.name)
-            return 1
-        elseif type(_G.SendAddonMessage) == "function" then
-            pcall(_G.SendAddonMessage, usePrefix, payload, "WHISPER", best.name)
-            return 1
+        if SourceEnabled(usePrefix) then
+            local payload = (usePrefix == "ULO")
+                and string.format("R:%s:%s:%s", reqId, tgtStr, origStr)
+                or (tonumber(targetLayer) and ("REQ:" .. tostring(tonumber(targetLayer))) or "REQ")
+            if usePrefix == "ULO" and best.version == 2 then
+                payload = string.format("R2:%s:%s:%s:%d", reqId, tgtStr, origStr, ULO.Intelligence.GetZone() or 0)
+            end
+            if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.SendAddonMessage) == "function" then
+                pcall(_G.C_ChatInfo.SendAddonMessage, usePrefix, payload, "WHISPER", best.name)
+                return 1
+            elseif type(_G.SendAddonMessage) == "function" then
+                pcall(_G.SendAddonMessage, usePrefix, payload, "WHISPER", best.name)
+                return 1
+            end
         end
     end
 
-    if type(_G.IsInGuild) == "function" and _G.IsInGuild() then
-        local payload = string.format("R:%s:%s:%s", reqId, tgtStr, origStr)
+    if not directOnly and SourceEnabled("ULO") and type(_G.IsInGuild) == "function" and _G.IsInGuild() then
+        local payload = string.format("R2:%s:%s:%s:%d", reqId, tgtStr, origStr, ULO.Intelligence.GetZone() or 0)
         if type(_G.C_ChatInfo) == "table" and type(_G.C_ChatInfo.SendAddonMessage) == "function" then
             pcall(_G.C_ChatInfo.SendAddonMessage, "ULO", payload, "GUILD")
             return 1
@@ -435,7 +471,7 @@ end
 -- Layer change listener: sync layer and zone ID to NWB globals and broadcast to Guild ULO peers
 if type(ULO.RegisterCallback) == "function" then
     ULO.RegisterCallback("OnLayerChanged", function(layer, serverId, zoneId)
-        if not isSyncing then
+        if SourceEnabled("NWB") and not isSyncing then
             if _G.NWB_CurrentLayer ~= layer or _G.NWB_CurrentLayerZoneID ~= zoneId then
                 _G.NWB_CurrentLayer = layer
                 _G.NWB_CurrentLayerZoneID = zoneId

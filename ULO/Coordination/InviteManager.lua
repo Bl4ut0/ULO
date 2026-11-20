@@ -158,8 +158,22 @@ end
 -- @param source string|nil: Originating system tag (defaults to "Direct Whisper")
 -- @return boolean: true if invite successfully dispatched
 -- @return string|nil: Error or rejection reason
-function Coordination.HandleWhisper(sender, msg, source, strictChat)
+function Coordination.HandleWhisper(sender, msg, source, strictChat, requestZone)
     source = source or "Direct Whisper"
+    local track = (source == "Guild Chat" and "guild") or (source == "AutoLayer" and "autoLayer")
+        or (source == "ULO Chan" and "ulo") or (source == "Direct Whisper" and "directWhisper")
+    if track and ULO.IsTrackEnabled and not ULO.IsTrackEnabled(track) then return false, "disabled" end
+    if Compat and Compat.IsSelfName and Compat.IsSelfName(sender) then
+        return false, "self_invite"
+    end
+    local zoneOK, zoneReason = ULO.Intelligence.RequestZoneAllowed(sender, requestZone, requestZone ~= nil)
+    if not zoneOK then return false, zoneReason end
+    -- AutoLayer's invitation/status replies contain the word 'layer' too.
+    -- They are responses to our request, never new requests to invite the helper.
+    local safeMsg = Compat and Compat.SafeString and Compat.SafeString(msg)
+    if safeMsg and string.match(string.lower(safeMsg), "^%s*%[autolayer%]") then
+        return false, "automated_reply"
+    end
     -- Guard 1: Auto-invite globally disabled
     if not autoInviteEnabled then
         return false, "disabled"
@@ -257,17 +271,16 @@ if type(_G.CreateFrame) == "function" then
         if event == "PLAYER_ENTERING_WORLD" then
             Coordination.SyncLeatrixPlusGuard()
             return
-        elseif event == "CHAT_MSG_GUILD" then
-            if not Coordination.IsGuildInviteEnabled() then return end
-            if type(msg) ~= "string" or type(sender) ~= "string" or sender == "" then return end
-            local playerName = type(_G.UnitName) == "function" and _G.UnitName("player")
-            local shortSender = string.match(sender, "^([^%-]+)") or sender
-            if playerName and (sender == playerName or shortSender == playerName) then
-                return
-            end
-            Coordination.HandleWhisper(sender, msg, "Guild Chat", true)
+        elseif event ~= "CHAT_MSG_GUILD" and event ~= "CHAT_MSG_WHISPER" then
             return
-        elseif event ~= "CHAT_MSG_WHISPER" then
+        end
+        if type(msg) ~= "string" or type(sender) ~= "string" then return end
+        msg, sender = Compat.SafeString(msg), Compat.SafeString(sender)
+        if not msg or not sender or sender == "" then return end
+        if event == "CHAT_MSG_GUILD" then
+            if not Coordination.IsGuildInviteEnabled() then return end
+            if Compat and Compat.IsSelfName and Compat.IsSelfName(sender) then return end
+            Coordination.HandleWhisper(sender, msg, "Guild Chat", true)
             return
         end
         local src = "Direct Whisper"

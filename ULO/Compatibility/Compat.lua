@@ -203,7 +203,7 @@ end
 -- @param val any: Value to check
 -- @return boolean: true if secret or unreadable
 function Compat.IsSecretValue(val)
-    if val == nil then return false end
+    if type(val) == "nil" then return false end
     local issecret = _G.issecretvalue
     if type(issecret) == "function" then
         local ok, secret = pcall(issecret, val)
@@ -232,7 +232,7 @@ end
 -- @param str any: Candidate string
 -- @return string|nil: Safe string, or nil if secret/invalid
 function Compat.SafeString(str)
-    if str == nil then return nil end
+    if type(str) == "nil" then return nil end
     if Compat.IsSecretValue(str) then return nil end
     if not Compat.CanAccess(str) then return nil end
 
@@ -374,10 +374,41 @@ end
 -- @param targetName string: Player name or Name-Realm
 -- @return boolean: true on success
 -- @return string|nil: Error identifier on failure
+--- Identifies the current character without confusing another realm's namesake.
+function Compat.IsSelfName(targetName)
+    local target, targetRealm = Compat.NormalizeTargetName(targetName)
+    if not target then return false end
+    local player, playerRealm
+    if type(_G.UnitFullName) == "function" then
+        local ok, name, realm = pcall(_G.UnitFullName, "player")
+        if ok then player, playerRealm = name, realm end
+    end
+    if not player and type(_G.UnitName) == "function" then
+        local ok, name, realm = pcall(_G.UnitName, "player")
+        if ok then player, playerRealm = name, realm end
+    end
+    local shortPlayer, embeddedRealm = Compat.NormalizeTargetName(player)
+    if not shortPlayer or string.lower(target) ~= string.lower(shortPlayer) then return false end
+    if not targetRealm then return true end
+    playerRealm = Compat.SafeString(playerRealm) or embeddedRealm
+    if (not playerRealm or playerRealm == "") and type(_G.GetRealmName) == "function" then
+        local ok, realm = pcall(_G.GetRealmName)
+        if ok then playerRealm = Compat.SafeString(realm) end
+    end
+    if not playerRealm then return false end
+    local function realmKey(realm)
+        return string.lower(string.gsub(realm, "[%s%-]", ""))
+    end
+    return realmKey(targetRealm) == realmKey(playerRealm)
+end
+
 function Compat.InviteUnit(targetName)
     local normalized = Compat.NormalizeInviteTarget(targetName)
     if not normalized or normalized == "" then
         return false, "invalid_target"
+    end
+    if Compat.IsSelfName(targetName) or Compat.IsSelfName(normalized) then
+        return false, "self_invite"
     end
 
     if type(_G.C_PartyInfo) == "table" and (type(_G.C_PartyInfo.InviteUnit) == "function" or type(_G.C_PartyInfo.InviteUnit) == "userdata") then

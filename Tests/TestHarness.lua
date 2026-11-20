@@ -721,15 +721,41 @@ function TestHarness.NewEnvironment(flavor, options)
             SetTextColor = function() end,
             Show = function() end,
             Hide = function() end,
-            SetWidth = function() end
+            SetWidth = function() end,
+            SetJustifyH = function() end,
+            SetWordWrap = function() end
         }
         return fs
     end
 
     function FrameMeta:Click()
+        if self.__enabled == false then return end
+        if self.__type == "CheckButton" then self:SetChecked(not self:GetChecked()) end
         if self.__scripts["OnClick"] then
             self.__scripts["OnClick"](self, "LeftButton")
         end
+    end
+
+    function FrameMeta:SetChecked(checked)
+        self.__checked = checked == true
+    end
+
+    function FrameMeta:SetEnabled(enabled) self.__enabled = enabled == true end
+    function FrameMeta:IsEnabled() return self.__enabled ~= false end
+    function FrameMeta:Enable() self.__enabled = true end
+    function FrameMeta:Disable() self.__enabled = false end
+    function FrameMeta:EnableMouseWheel(enabled) self.__mouseWheel = enabled == true end
+
+    function FrameMeta:SetFrameStrata(strata)
+        self.__strata = strata
+    end
+
+    function FrameMeta:GetFrameStrata()
+        return self.__strata or "MEDIUM"
+    end
+
+    function FrameMeta:GetChecked()
+        return self.__checked == true
     end
 
     env.CreateFrame = function(frameType, name, parent, template)
@@ -757,6 +783,7 @@ function TestHarness.NewEnvironment(flavor, options)
 
     function env.FireEvent(event, ...)
         event = string.upper(event)
+        if event == "PARTY_INVITE_REQUEST" then harnessState.incomingInviter = ... end
         local listeners = harnessState.eventListeners[event] or {}
         local count = 0
 
@@ -840,6 +867,16 @@ function TestHarness.NewEnvironment(flavor, options)
     ----------------------------------------------------------------------------
     -- C_PartyInfo & GROUP APIS
     ----------------------------------------------------------------------------
+    local function ModelAcceptInvite()
+        local helper = harnessState.incomingInviter or "Helper-Realm"
+        local existing = harnessState.mockUnits[helper]
+        harnessState.mockUnits.party1 = existing or {
+            name = helper, guid = "Player-4469-99999999", isPlayer = true,
+            mapID = harnessState.mockUnits.player.mapID,
+        }
+        harnessState.mockParty.members = { "player", helper }
+        harnessState.mockParty.leader = "party1"
+    end
     env.C_PartyInfo = {
         InviteUnit = function(name)
             harnessState.mockParty.inviteCallCount = harnessState.mockParty.inviteCallCount + 1
@@ -866,7 +903,7 @@ function TestHarness.NewEnvironment(flavor, options)
         end,
         ConfirmAcceptInvite = function()
             harnessState.mockParty.acceptCallCount = harnessState.mockParty.acceptCallCount + 1
-            harnessState.mockParty.members = { "player", "Helper-Realm" }
+            ModelAcceptInvite()
             env.FireEvent("GROUP_JOINED", 1, "party-guid-123")
             env.FireEvent("GROUP_ROSTER_UPDATE")
             return true
@@ -912,7 +949,7 @@ function TestHarness.NewEnvironment(flavor, options)
 
     env.AcceptGroup = function()
         harnessState.mockParty.acceptCallCount = harnessState.mockParty.acceptCallCount + 1
-        harnessState.mockParty.members = { "player", "Helper-Realm" }
+        ModelAcceptInvite()
         env.FireEvent("GROUP_JOINED", 1, "party-guid-123")
         env.FireEvent("GROUP_ROSTER_UPDATE")
         return true
@@ -995,13 +1032,35 @@ function TestHarness.NewEnvironment(flavor, options)
         harnessState.mockChat.lastBroadcast = msg
     end
 
+    -- A pre-existing layer subscription models the player's chat cache. Custom
+    -- channels allocate after the five reserved slots, never a synthetic /1.
+    harnessState.mockChat.channelSlots = { layer = 6 }
+    env.GetChannelName = function(channel)
+        if type(channel) == "number" then
+            for name, slot in pairs(harnessState.mockChat.channelSlots) do
+                if slot == channel then return slot, name end
+            end
+            return 0, nil
+        end
+        return harnessState.mockChat.channelSlots[channel] or 0, channel
+    end
+    env.C_DateAndTime = { GetCurrentCalendarTime = function() return { monthDay = 14, month = 11, year = 2026 } end }
+    env.GetRealmName = function() return "Camelot" end
     env.JoinChannelByName = function(ch)
         table.insert(harnessState.mockChat.joinedChannels, ch)
-        return 1
+        local slots = harnessState.mockChat.channelSlots
+        if not slots[ch] then
+            local slot, used = 6, {}
+            for _, value in pairs(slots) do used[value] = true end
+            while used[slot] do slot = slot + 1 end
+            slots[ch] = slot
+        end
+        return slots[ch]
     end
 
     env.LeaveChannelByName = function(ch)
         harnessState.mockChat.leftChannels[ch] = true
+        harnessState.mockChat.channelSlots[ch] = nil
     end
 
     env.StaticPopupDialogs = {
@@ -1186,6 +1245,7 @@ function TestHarness.LoadAddonIntoEnv(env, projectRoot)
         addonRoot .. "/Monitor/RefreshMonitor.lua",
         addonRoot .. "/Monitor/CooldownTracker.lua",
         addonRoot .. "/Coordination/KeywordMatcher.lua",
+        addonRoot .. "/Coordination/LayerIntelligence.lua",
         addonRoot .. "/Coordination/InviteManager.lua",
         addonRoot .. "/Coordination/GroupManager.lua",
         addonRoot .. "/Interop/AutoLayerProtocol.lua",

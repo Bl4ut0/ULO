@@ -47,7 +47,9 @@ function ensureChangelogSection(version, customNotes) {
   if (!rootCl.includes(`[v${cleanVer}]`) && !rootCl.includes(` ${cleanVer}`)) {
     const marker = '# Changelog';
     const insertion = `\n\n${heading}\n${defaultBody}\n`;
-    if (rootCl.includes(marker)) {
+    if (/^##\s+\[Unreleased\]\s*$/m.test(rootCl)) {
+      rootCl = rootCl.replace(/^##\s+\[Unreleased\]\s*$/m, `## [Unreleased]\n\n${heading}${customNotes ? '\n' + customNotes : ''}`);
+    } else if (rootCl.includes(marker)) {
       rootCl = rootCl.replace(marker, marker + insertion);
     } else {
       rootCl = `${marker}${insertion}\n${rootCl}`;
@@ -57,18 +59,8 @@ function ensureChangelogSection(version, customNotes) {
   }
 
   const addonClPath = path.join(repoRoot, ADDON_CHANGELOG_PATH);
-  let addonCl = fs.existsSync(addonClPath) ? fs.readFileSync(addonClPath, 'utf8') : 'Universal Layer Operator (ULO) Changelog\n========================================\n\n';
-  if (!addonCl.includes(`v${cleanVer}`)) {
-    const headerEnd = addonCl.indexOf('\n\n');
-    const entry = `v${cleanVer} (${today})\n${defaultBody}\n\n`;
-    if (headerEnd >= 0) {
-      addonCl = addonCl.slice(0, headerEnd + 2) + entry + addonCl.slice(headerEnd + 2);
-    } else {
-      addonCl = addonCl + '\n' + entry;
-    }
-    fs.writeFileSync(addonClPath, addonCl, 'utf8');
-    console.log(`Updated ${ADDON_CHANGELOG_PATH} with section v${cleanVer}`);
-  }
+  fs.writeFileSync(addonClPath, fs.readFileSync(rootClPath, 'utf8'), 'utf8');
+  console.log(`Synchronized ${ADDON_CHANGELOG_PATH}.`);
 }
 
 function parseFlags(argv) {
@@ -135,9 +127,7 @@ function main() {
     const version = validateVersionForChannel(channel, positional[2]);
     const ref = typeof flags.ref === 'string' ? flags.ref : 'HEAD';
 
-    execFileSync(
-      'powershell',
-      [
+    const buildArgs = [
         '-NoProfile',
         '-ExecutionPolicy',
         'Bypass',
@@ -151,7 +141,11 @@ function main() {
         channel,
         '-RepoRoot',
         repoRoot,
-      ],
+      ];
+    if (flags.existing === true) buildArgs.push('-UseExisting');
+    execFileSync(
+      'powershell',
+      buildArgs,
       { cwd: repoRoot, stdio: 'inherit' }
     );
 

@@ -12,6 +12,7 @@
 ## X-Category: Map & Minimap
 ## X-Website: https://github.com/Bl4ut0/ULO
 ## X-Part-Of: ULO
+## X-Curse-Project-ID: 1819280
 
 # Core & Compatibility Foundation (Milestone 1)
 Core\Constants.lua
@@ -28,6 +29,7 @@ Monitor\CooldownTracker.lua
 
 # Coordination Subsystem (Milestone 3)
 Coordination\KeywordMatcher.lua
+Coordination\LayerIntelligence.lua
 Coordination\InviteManager.lua
 Coordination\GroupManager.lua
 

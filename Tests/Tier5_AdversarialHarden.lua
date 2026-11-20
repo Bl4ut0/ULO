@@ -676,7 +676,7 @@ TestHarness.RegisterTest("Tier 5", "AdvA-14", "T5-AdvA-14: Overlord State Gate M
     TestHarness.AssertEqual(d3.message, "N:req103:combat", "Decline reason must be 'combat'")
 
     -- Gate 4: Party full (5/5 players) -> "full"
-    env.SetUnit("player", { inCombat = false })
+    env.SetUnit("player", { inCombat = false, mapID = 1411 })
     env.__harness.mockParty.members = { "player", "p1", "p2", "p3", "p4" }
     Overlord.ProcessMessage("R:2:req104:2", "Requester4")
     local d4 = GetLastDecline()
@@ -1321,7 +1321,7 @@ TestHarness.RegisterTest("Tier 5", "AdvB-13", "[AdvB] Coordination: Silent Group
     TestHarness.AssertEqual(leftPartyCount, 0, "LeaveParty must NOT be called after group already disbanded")
 end)
 
-TestHarness.RegisterTest("Tier 5", "AdvB-14", "[AdvB] Coordination: Hop Timeout Invariant When Already In Existing Group", function(env)
+TestHarness.RegisterTest("Tier 5", "AdvB-14", "[AdvB] Coordination: Existing Social Group Is Never Used For A Hop", function(env)
     local Coord = env.ULO.Coordination
     Coord.ResetHopState()
 
@@ -1340,14 +1340,15 @@ TestHarness.RegisterTest("Tier 5", "AdvB-14", "[AdvB] Coordination: Hop Timeout 
     end)
 
     -- Request hop to layer 3
-    Coord.RequestLayerHop(3)
-    TestHarness.AssertTrue(Coord.IsAwaitingHop())
+    local ok, reason = Coord.RequestLayerHop(3)
+    TestHarness.AssertFalse(ok, "A hop cannot start inside an existing social group")
+    TestHarness.AssertEqual(reason, "already_grouped")
+    TestHarness.AssertFalse(Coord.IsAwaitingHop())
 
     -- Advance time past the 40.0s verification timeout
     env.AdvanceTime(41.0)
 
-    -- Callback must fire
-    TestHarness.AssertEqual(timedOutReason, "timeout", "OnHopTimedOut callback must fire with 'timeout'")
+    TestHarness.AssertNil(timedOutReason, "A rejected request does not arm a timeout")
 
     -- Invariant: Player never joined a hop helper group (wasAwaitingVerification was false).
     -- ULO must NOT kick the player out of their existing party!

@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Tests/Tier1_FeatureTests.lua
 -- Universal Layer Operator (ULO)
--- Tier 1: Feature Coverage (85 Test Cases, F01 to F17)
+-- Tier 1: Feature Coverage (91 Test Cases, F01 to F17)
 -- ============================================================================
 
 local TestHarness = ... or require("Tests.TestHarness")
@@ -787,9 +787,274 @@ TestHarness.RunTest("Tier 1", "F16", "T1-F16-05: Interactive 'Refresh Now' Butto
     TestHarness.AssertTrue(ok, "Refresh requested successfully via HUD")
 end)
 
+-- Owner report, November 16, 2026: start Actions closed at every login/reload,
+TestHarness.RunTest("Tier 1", "F16", "scrollable-layer-request-list", function()
+    local env, ULO = HelperSetup()
+    ULO.Detection.ScanGuid("Creature-0-4469-0-14-1-1")
+    ULO.Detection.ScanGuid("Creature-0-4469-0-14-1-2")
+    ULO.UI.StatusHUD.Update()
+    local list = env.ULOStatusHUDLayerList
+    TestHarness.AssertNotNil(list, "Main window has a scrollable layer list")
+    TestHarness.AssertNil(env.ULOStatusHUDHopL8, "The fixed eight-button grid is gone")
+    TestHarness.AssertFalse(env.ULOStatusHUDLayerRequest1:IsEnabled(), "The current layer cannot be requested")
+    ULO.Intelligence.RecordPeer("ListHelper-Camelot", 2, 4470, true, 1411, 2, "ULO")
+    env.AdvanceTime(1)
+    TestHarness.AssertEqual(env.ULOStatusHUDLayerRow2.info:GetText(), "1 helper", "Helper counts refresh while browsing")
+    env.AdvanceTime(91)
+    TestHarness.AssertEqual(env.ULOStatusHUDLayerRow2.info:GetText(), "Unverified", "Expired claims stop displaying a verified helper")
+    list:GetScript("OnMouseWheel")(list, -10)
+    TestHarness.AssertEqual(env.ULOStatusHUDLayerRow1.layer, 11, "Wheel reaches layers beyond eight")
+    env.ULOStatusHUDLayerRequest3:Click()
+    TestHarness.AssertEqual(ULO.Coordination.GetActiveHopTarget(), 13, "A recycled row requests its displayed layer")
+    ULO.Coordination.CancelHopRequest("test")
+    ULO.UI.StatusHUD.ScrollLayers(999)
+    TestHarness.AssertEqual(env.ULOStatusHUDLayerRow5.layer, ULO.Constants.KEYWORDS.MAX_LAYER, "Last supported layer is reachable")
+    TestHarness.AssertFalse(env.ULOStatusHUDLayerDown:IsEnabled(), "Scroll clamps at the end")
+    ULO.UI.StatusHUD.ScrollLayers(-999)
+    TestHarness.AssertEqual(env.ULOStatusHUDLayerRow1.layer, 1, "Scroll clamps at the start")
+end)
+
+TestHarness.RunTest("Tier 1", "F12", "autolayer-server-calendar-and-single-channel-fallback", function()
+    local env = TestHarness.NewEnvironment("wowf")
+    local day = 16
+    env.GetRealmName = function() return "Camelot" end
+    env.C_DateAndTime.GetCurrentCalendarTime = function() return { monthDay = day, month = 11, year = 2026 } end
+    env.date = function() return "15-11-2026" end -- A different local date must not salt the server's channel.
+    TestHarness.LoadAddonIntoEnv(env)
+    local AL = env.ULO.Interop.AutoLayer
+    local expected = { "layer", "layer356604e0", "layer357204e0", "layer355704e0" }
+    TestHarness.AssertTableEqual(AL.GetManagedChannels(), expected, "AutoLayer 1.9.15 server-calendar fixtures (independent zlib Adler32)")
+    AL.JoinChannels()
+    TestHarness.AssertEqual(#env.__harness.mockChat.joinedChannels, 4, "All compatible subscriptions are joined")
+    TestHarness.AssertNil(env.__harness.mockChat.leftChannels.layer, "Joining a daily channel does not leave static layer")
+    AL.MarkChannelFailed("layer")
+    local _, sent = AL.FormatBroadcastMessage(3)
+    local outgoing = env.__harness.mockChat.outgoingChatMessages
+    TestHarness.AssertEqual(sent, 1, "One request uses one available fallback channel")
+    TestHarness.AssertEqual(outgoing[#outgoing].target, 7, "Today's day-month-year hash is first fallback")
+    AL.MarkChannelFailed(expected[2])
+    AL.FormatBroadcastMessage(3)
+    TestHarness.AssertEqual(outgoing[#outgoing].target, 8, "Year-month-day hash is the next fallback")
+    day = 17
+    env.AdvanceTime(31)
+    TestHarness.AssertTableEqual(AL.GetManagedChannels(), { "layer", "layer356f04e1", "layer357304e1", "layer355d04e1" }, "Calendar rollover regenerates all daily names")
+    TestHarness.AssertTrue(env.__harness.mockChat.leftChannels[expected[2]], "Owned obsolete daily subscriptions are left")
+    env.GetChannelName = function(name) return name == "layer" and 3 or 0 end
+    local before = #outgoing
+    local _, protectedSent = AL.FormatBroadcastMessage(3)
+    TestHarness.AssertEqual(protectedSent, 0, "Reserved slots cannot be used as a broadcast fallback")
+    TestHarness.AssertEqual(#outgoing, before)
+    env.C_DateAndTime, env.date = nil, nil
+    TestHarness.AssertTableEqual(AL.GetManagedChannels(), { "layer" }, "Missing date APIs do not invent a fixed daily salt")
+    env.GetChannelName = nil
+    local _, missingSent = AL.FormatBroadcastMessage(3)
+    TestHarness.AssertEqual(missingSent, 0, "Missing channel APIs cannot invent a /1 destination")
+end)
+
+TestHarness.RunTest("Tier 1", "F12", "zone-resolver-client-scope-and-freshness", function()
+    for _, flavor in ipairs({ "wowf", "wow_anniversary", "wow_classic_era", "wow_classic", "wow" }) do
+        local env, ULO = HelperSetup(flavor)
+        local I = ULO.Intelligence
+        env.__harness.mockMap.maps[900001] = { mapType = 5, parentMapID = 1411 }
+        env.__harness.mockMap.maps[900002] = { mapType = 5, parentMapID = 900002 }
+        TestHarness.AssertEqual(I.ResolveZone(900001), 1411, "A town resolves to its parent zone")
+        TestHarness.AssertNil(I.ResolveZone(947), "World/continent maps are not zones")
+        TestHarness.AssertNil(I.ResolveZone(900002), "Cycles are bounded")
+        local nativeSecret = env.issecretvalue
+        env.issecretvalue = function(value) return value == 900003 or (nativeSecret and nativeSecret(value)) end
+        TestHarness.AssertNil(I.ResolveZone(900003), "Secret maps are unreadable")
+        env.issecretvalue = nativeSecret
+        TestHarness.AssertEqual(I.RequiresZone(), flavor == "wowf" or flavor == "wow_anniversary", "Policy is client-specific")
+        I.RecordPeer("Remote-Camelot", 3, 4473, true, 900001, 2, "ULO")
+        if I.RequiresZone() then
+            TestHarness.AssertEqual(I.PeerZoneStatus("Remote-Camelot"), "same_zone")
+            env.AdvanceTime(91)
+            TestHarness.AssertEqual(I.PeerZoneStatus("Remote-Camelot"), "unverified", "A silent peer's zone expires")
+        end
+    end
+end)
+
+-- Owner report, November 16, 2026: start Actions closed at every login/reload,
+-- while allowing it to remain independent of the main window during play.
+TestHarness.RunTest("Tier 1", "F16", "reported-actions-startup-hidden", function()
+    for _, flavor in ipairs({ "wowf", "wow_anniversary", "wow_classic_era", "wow_classic", "wow" }) do
+        for _, saved in ipairs({ {}, { value = true }, { value = false } }) do
+            for _, showMain in ipairs({ true, false }) do
+                local env = TestHarness.NewEnvironment(flavor)
+                env.ULODB = { showActionsHUD = saved.value, showStatusHUD = showMain }
+                env.ULO_CONFIG = { ui = { showStatusHUD = showMain } }
+                TestHarness.LoadAddonIntoEnv(env)
+                local ULO = env.ULO
+                local main = ULO.UI.StatusHUD.GetFrame()
+                local actions = ULO.UI.ActionsHUD.GetFrame()
+                TestHarness.AssertFalse(actions:IsShown(), "Actions starts hidden before login")
+                env.FireEvent("ADDON_LOADED", "ULO")
+                env.FireEvent("PLAYER_LOGIN")
+                env.FireEvent("PLAYER_ENTERING_WORLD", true, false)
+                TestHarness.AssertFalse(actions:IsShown(), "Saved visibility never reopens Actions at startup")
+                TestHarness.AssertEqual(env.ULODB.showActionsHUD, false, "Previous visibility is cleared")
+                if not showMain then
+                    TestHarness.AssertFalse(main:IsShown(), "Startup keeps a disabled main window hidden")
+                end
+                ULO.UI.StatusHUD.Show()
+                env.ULOStatusHUDActionsButton:Click()
+                TestHarness.AssertTrue(actions:IsShown(), "Actions opens on request")
+                TestHarness.AssertEqual(actions.__points[1].rel, env.UIParent, "Default free window anchors independently")
+                env.ULOStatusHUDCloseButton:Click()
+                TestHarness.AssertFalse(main:IsShown(), "Main close button closes main")
+                TestHarness.AssertTrue(actions:IsShown(), "Free Actions remains open independently")
+                env.FireEvent("PLAYER_ENTERING_WORLD", false, false)
+                TestHarness.AssertTrue(actions:IsShown(), "Zone transitions preserve an explicitly opened free window")
+                TestHarness.AssertFalse(main:IsShown(), "Zone transitions do not reopen main")
+                env.ULOActionsHUDCloseButton:Click()
+                TestHarness.AssertFalse(actions:IsShown(), "Actions closes with its own close button")
+                ULO.UI.StatusHUD.Show()
+                TestHarness.AssertFalse(actions:IsShown(), "Opening main does not reopen Actions")
+            end
+        end
+    end
+end)
+
+TestHarness.RunTest("Tier 1", "F16", "actions-linked-and-free-window-lifecycle", function()
+    for _, flavor in ipairs({ "wowf", "wow_anniversary", "wow_classic_era", "wow_classic", "wow" }) do
+        local env = TestHarness.NewEnvironment(flavor)
+        env.ULODB = { actionsPosition = { x = 80, y = 90 } }
+        TestHarness.LoadAddonIntoEnv(env)
+        env.FireEvent("PLAYER_ENTERING_WORLD", true, false)
+        local ULO = env.ULO
+        local main = ULO.UI.StatusHUD.GetFrame()
+        local actions = ULO.UI.ActionsHUD.GetFrame()
+        local linkButton = env.ULOActionsHUDLinkButton
+        TestHarness.AssertNotNil(linkButton, "Actions has a Linked / Free button")
+        ULO.UI.ActionsHUD.Show()
+        TestHarness.AssertEqual(linkButton.textFS:GetText(), "Free", "Independent mode is the default")
+        TestHarness.AssertEqual(actions.__points[1].rel, env.UIParent, "Free window anchors to the screen")
+        TestHarness.AssertEqual(actions.__points[1].x, 80, "Free position is restored")
+        local dragStarts = 0
+        local startMoving = actions.StartMoving
+        actions.StartMoving = function(self) dragStarts = dragStarts + 1; startMoving(self) end
+        linkButton:Click()
+        TestHarness.AssertTrue(ULO.UI.ActionsHUD.IsLinked(), "Button enables linked mode")
+        TestHarness.AssertEqual(env.ULODB.actionsLinked, true, "Link preference is saved")
+        TestHarness.AssertEqual(linkButton.textFS:GetText(), "Linked", "Button shows the current mode")
+        TestHarness.AssertEqual(actions.__points[1].rel, main, "Linked Actions anchors to main")
+        actions:GetScript("OnDragStart")(actions)
+        actions:GetScript("OnDragStop")(actions)
+        TestHarness.AssertEqual(dragStarts, 0, "Linked window cannot be dragged independently")
+        TestHarness.AssertEqual(env.ULODB.actionsPosition.x, 80, "Linking preserves the free position")
+        ULO.UI.StatusHUD.SetPosition(200, 180)
+        TestHarness.AssertEqual(actions.__points[1].rel, main, "Moving main retains the linked anchor")
+        env.ULOStatusHUDCloseButton:Click()
+        TestHarness.AssertFalse(actions:IsShown(), "Closing main closes linked Actions")
+        ULO.UI.StatusHUD.Show()
+        TestHarness.AssertFalse(actions:IsShown(), "Reopening main leaves Actions closed")
+        ULO.UI.ActionsHUD.Show()
+        main:Hide() -- Escape and other native frame hiding bypass StatusHUD.Hide.
+        TestHarness.AssertFalse(actions:IsShown(), "Native main hide also closes linked Actions")
+        ULO.UI.ActionsHUD.Show()
+        TestHarness.AssertTrue(main:IsShown(), "Opening linked Actions also opens main")
+        linkButton:Click()
+        TestHarness.AssertFalse(ULO.UI.ActionsHUD.IsLinked(), "Button returns to free mode")
+        TestHarness.AssertEqual(actions.__points[1].rel, env.UIParent, "Unlinking detaches the anchor")
+        TestHarness.AssertEqual(actions.__points[1].x, 80, "Unlinking restores the free position")
+        actions:GetScript("OnDragStart")(actions)
+        TestHarness.AssertEqual(dragStarts, 1, "Free window can be dragged independently")
+        actions.GetLeft = function() return 120.25 end
+        actions.GetBottom = function() return 200.75 end
+        actions.GetEffectiveScale = function() return 2 end
+        env.UIParent.GetEffectiveScale = function() return 1 end
+        actions:GetScript("OnDragStop")(actions)
+        TestHarness.AssertEqual(env.ULODB.actionsPosition.x, 241, "Free drag saves screen-scaled X")
+        TestHarness.AssertEqual(env.ULODB.actionsPosition.y, 402, "Free drag saves screen-scaled Y")
+        main:Hide()
+        TestHarness.AssertTrue(actions:IsShown(), "Free window stays open when main hides")
+        linkButton:Click()
+        TestHarness.AssertTrue(main:IsShown(), "Linking an independent window reveals main")
+
+        local reload = TestHarness.NewEnvironment(flavor)
+        reload.ULODB = { actionsLinked = true, actionsPosition = env.ULODB.actionsPosition,
+            showActionsHUD = true, showStatusHUD = false }
+        reload.ULO_CONFIG = { ui = { showStatusHUD = false } }
+        TestHarness.LoadAddonIntoEnv(reload)
+        reload.FireEvent("PLAYER_ENTERING_WORLD", true, true)
+        TestHarness.AssertTrue(reload.ULO.UI.ActionsHUD.IsLinked(), "Reload restores link mode")
+        TestHarness.AssertFalse(reload.ULO.UI.ActionsHUD.GetFrame():IsShown(), "Reload never restores Actions visibility")
+        TestHarness.AssertFalse(reload.ULO.UI.StatusHUD.GetFrame():IsShown(), "Linked preference does not open main at startup")
+        reload.ULO.UI.ActionsHUD.Show()
+        TestHarness.AssertEqual(reload.ULO.UI.ActionsHUD.GetFrame().__points[1].rel,
+            reload.ULO.UI.StatusHUD.GetFrame(), "Reload restores the linked anchor on demand")
+    end
+end)
+
 --------------------------------------------------------------------------------
 -- F17: Slash Command System & Options UI
 --------------------------------------------------------------------------------
+
+TestHarness.RunTest("Tier 1", "F17", "mode-dropdown-independent-request-tracks", function()
+    local env, ULO = HelperSetup()
+    ULO.UI.ActionsHUD.Show()
+    env.ULOActionsHUDModeButton:Click()
+    local menu = env.ULOActionsModeDropdown
+    TestHarness.AssertNotNil(menu, "Mode opens a checkbox dropdown")
+    TestHarness.AssertTrue(menu:IsShown(), "Dropdown is visible")
+    for _, track in ipairs(ULO.RequestTracks) do
+        TestHarness.AssertTrue(env["ULOActionsModeTrack_" .. track.id]:GetChecked(), "Tracks default to enabled")
+    end
+    env.ULOActionsModeTrack_autoLayer:Click()
+    TestHarness.AssertFalse(ULO.IsTrackEnabled("autoLayer"), "AutoLayer can be disabled alone")
+    TestHarness.AssertTrue(ULO.IsTrackEnabled("overlord"), "Overlord stays enabled")
+    TestHarness.AssertTrue(menu:IsShown(), "The menu stays open for multiple selections")
+    local mixedInvites = env.__harness.mockParty.inviteCallCount
+    env.FireEvent("CHAT_MSG_CHANNEL", "<AZ> inv layer", "AutoHelper-Camelot", nil, "6. layer", nil, nil, nil, 6, "layer")
+    TestHarness.AssertEqual(env.__harness.mockParty.inviteCallCount, mixedInvites, "Disabled AutoLayer cannot invite while other tracks are enabled")
+    ULO.Interop.Overlord.ProcessMessage("R:2:mixed:-", "OverlordHelper-Camelot")
+    TestHarness.AssertEqual(env.__harness.mockParty.inviteCallCount, mixedInvites + 1, "Enabled Overlord still invites with AutoLayer disabled")
+    env.ULOActionsModeTrack_overlord:Click()
+    env.ULOActionsModeTrack_autoLayer:Click()
+    TestHarness.AssertTrue(ULO.IsTrackEnabled("autoLayer"), "AutoLayer can be enabled again")
+    TestHarness.AssertFalse(ULO.IsTrackEnabled("overlord"), "Overlord remains disabled")
+    ULO.Interop.Overlord.ProcessMessage("R:2:mixed2:-", "OtherOverlord-Camelot")
+    env.FireEvent("CHAT_MSG_CHANNEL", "<AZ> inv layer", "AutoHelper-Camelot", nil, "6. layer", nil, nil, nil, 6, "layer")
+    TestHarness.AssertEqual(env.__harness.mockParty.inviteCallCount, mixedInvites + 2, "Only enabled AutoLayer invites with Overlord disabled")
+    ULO.UI.ActionsHUD.Hide()
+    TestHarness.AssertFalse(menu:IsShown(), "Closing Actions closes its dropdown")
+    ULO.UI.ActionsHUD.Show()
+    env.ULOActionsHUDModeButton:Click()
+    TestHarness.AssertFalse(env.ULOActionsModeTrack_overlord:GetChecked(), "Reopened menu reflects saved selections")
+
+    local reload = TestHarness.NewEnvironment("wowf")
+    reload.ULODB = {}
+    for _, track in ipairs(ULO.RequestTracks) do reload.ULODB[track.flag] = env.ULODB[track.flag] end
+    TestHarness.LoadAddonIntoEnv(reload)
+    TestHarness.AssertTrue(reload.ULO.IsTrackEnabled("autoLayer"), "Reload retains an enabled track")
+    TestHarness.AssertFalse(reload.ULO.IsTrackEnabled("overlord"), "Reload retains a disabled track")
+    for _, track in ipairs(ULO.RequestTracks) do ULO.SetTrackEnabled(track.id, false) end
+    local invites = env.__harness.mockParty.inviteCallCount
+    env.FireEvent("CHAT_MSG_WHISPER", "inv layer", "Friend-Camelot")
+    env.FireEvent("CHAT_MSG_GUILD", "inv layer", "Friend-Camelot")
+    env.FireEvent("CHAT_MSG_CHANNEL", "<AZ> inv layer", "Friend-Camelot", nil, "6. layer", nil, nil, nil, 6, "layer")
+    env.FireEvent("CHAT_MSG_CHANNEL", "<ULO> inv layer", "Friend-Camelot", nil, "6. layer", nil, nil, nil, 6, "layer")
+    for _, prefix in ipairs({ "ULO", "TresLayerSwap", "LayerHopper" }) do
+        ULO.Interop.Guild.ProcessAddonMessage(prefix, "R:disabled:-:1", "WHISPER", "Friend-Camelot")
+    end
+    ULO.Interop.Overlord.ProcessMessage("R:2:disabled:1", "Friend-Camelot")
+    TestHarness.AssertEqual(env.__harness.mockParty.inviteCallCount, invites, "Disabled tracks cannot dispatch incoming invites")
+    TestHarness.AssertFalse(ULO.Interop.NWB.SyncWithNWB(), "Disabled NWB sync is inactive")
+    ULO.Detection.ScanGuid("Creature-0-4470-0-14-1-1")
+    ULO.Detection.ScanGuid("Creature-0-4470-0-14-1-2")
+    local ok, reason = ULO.Coordination.RequestLayerHop(nil)
+    TestHarness.AssertFalse(ok, "No enabled tracks means no outbound request")
+    TestHarness.AssertEqual(reason, "no_helpers")
+    TestHarness.AssertEqual(#env.__harness.mockChat.outgoingChatMessages, 0, "Disabled public tracks cannot broadcast")
+
+    local legacy = TestHarness.NewEnvironment("wowf")
+    legacy.ULODB = { uloOnlyMode = true, autoLayerEnabled = false, overlordEnabled = false }
+    TestHarness.LoadAddonIntoEnv(legacy)
+    legacy.ULO.SetTrackEnabled("tresLayerSwap", true)
+    TestHarness.AssertTrue(legacy.ULO.IsTrackEnabled("tresLayerSwap"), "A single track can be enabled in a legacy profile")
+    TestHarness.AssertFalse(legacy.ULO.IsTrackEnabled("autoLayer"), "Legacy AutoLayer choice is preserved")
+    TestHarness.AssertFalse(legacy.ULO.IsTrackEnabled("overlord"), "Legacy Overlord choice is preserved")
+end)
 
 TestHarness.RunTest("Tier 1", "F17", "T1-F17-01: /ulo help Command Execution", function()
     local env, ULO = HelperSetup()

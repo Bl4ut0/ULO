@@ -3,7 +3,7 @@
 -- File: UI/StatusHUD.lua
 -- Description: Movable Layer Operator HUD. Displays active layer number, 180s
 --              countdown with <=10s visual urgency alert, post-transfer cooldown,
---              L1-L8 direct hop grid, [Hop Any], [Refresh], [Scan NPCs], and
+--              scrollable layer requests, [Hop Any], [Refresh], [Scan NPCs], and
 --              [Auto-Inv] controls.
 -- ============================================================================
 
@@ -25,7 +25,7 @@ local C = ULO.Constants
 
 -- Constants (width strictly <= 300 per HUD layout tests)
 local HUD_WIDTH = 296
-local HUD_HEIGHT = 264
+local HUD_HEIGHT = 350
 local ACTIONS_WIDTH = 340
 local ACTIONS_HEIGHT = 264
 local ACTIONS_MAX_LOGS = 50
@@ -53,6 +53,7 @@ local ACTION_COLORS = {
 
 -- Runtime State
 local isMinimized = false
+local hasEnteredWorld = false
 local lastActionText = "Drag header to move | Click [Actions] for feed"
 ULO.actionLog = ULO.actionLog or {}
 
@@ -75,7 +76,14 @@ local autoInvButton = nil
 local actionsButton = nil
 local optionsButton = nil
 local closeButton = nil
-local layerHopButtons = {}
+local layerListFrame = nil
+local layerListBgTex = nil
+local layerRows = {}
+local layerOffset = 0
+local LAYER_VISIBLE_ROWS = 5
+local layerRangeFS = nil
+local layerUpButton = nil
+local layerDownButton = nil
 local hudBgTex = nil
 local hudHeaderBgTex = nil
 local hudHeaderLineTex = nil
@@ -85,6 +93,10 @@ local hudTitleFS = nil
 local actionsFrame = nil
 local actionsModeButton = nil
 local actionsThemeButton = nil
+local actionsLinkButton = nil
+local modeDropdownFrame = nil
+local modeDropdownBgTex = nil
+local modeTrackButtons = {}
 local telemetryStateFS = nil
 local telemetryNetFS = nil
 local telemetryPeersFS = nil
@@ -314,8 +326,6 @@ function ULO.SetULOOnlyMode(enabled)
 
     if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
         ULO.Interop.Overlord.SyncHelpMode()
-    elseif flag and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
-        pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
     end
     if ULO.Coordination and type(ULO.Coordination.SyncLeatrixPlusGuard) == "function" then
         ULO.Coordination.SyncLeatrixPlusGuard()
@@ -373,6 +383,10 @@ function StatusHUD.ApplyTheme()
     end
 
     SetTex(actionsBgTex, t.bg)
+    SetTex(layerListBgTex, t.teleBg)
+    ApplyBorderColor(layerListFrame, t.border)
+    SetTex(modeDropdownBgTex, t.bg)
+    ApplyBorderColor(modeDropdownFrame, t.border)
     SetTex(actionsHeaderBgTex, t.hdr)
     SetTex(actionsHeaderLineTex, t.line)
     SetTex(actionsTeleBgTex, t.teleBg)
@@ -501,8 +515,18 @@ local function TriggerHopToLayer(targetLayer)
         ok, reason = ULO.Coordination.RequestLayerHop(targetLayer)
     end
 
-    if ok == false and reason == "cooldown" then
-        local msg = "Hop blocked: cooldown active (" .. StatusHUD.GetCooldownText() .. ")"
+    if ok == false then
+        local messages = {
+            cooldown = "Hop blocked: cooldown active (" .. StatusHUD.GetCooldownText() .. ")",
+            already_on_layer = "You are already on that layer.",
+            layer_unknown = "Scan nearby NPCs to identify your layer before using Hop Any.",
+            zone_unknown = "Your zone is not readable yet. Wait until you reach an open-world zone.",
+            hop_pending = "A layer hop is already in progress.",
+            already_grouped = "Leave your current group before requesting a layer hop.",
+            no_helpers = "No enabled helper or layer channel is available.",
+            invalid_layer = "Choose a valid layer number.",
+        }
+        local msg = messages[reason] or "Layer hop could not be requested."
         SetActionFeedback(msg)
         PrintToChat(msg)
     elseif targetLayer then
@@ -643,7 +667,7 @@ if hudFrame then
 
         actionStatusFS = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         if actionStatusFS and type(actionStatusFS.SetPoint) == "function" then
-            actionStatusFS:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -178)
+            actionStatusFS:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -264)
             if type(actionStatusFS.SetText) == "function" then
                 actionStatusFS:SetText(lastActionText)
             end
@@ -676,25 +700,54 @@ if hudFrame then
         actionsButton:SetPoint("RIGHT", optionsButton or hudFrame, "LEFT", -3, 0)
     end
 
-    -- 4x2 Direct Layer Hop Grid (L1 - L8)
-    for i = 1, 8 do
-        local col = (i - 1) % 4
-        local row = math.floor((i - 1) / 4)
-        local lBtn = CreateStyledButton("ULOStatusHUDHopL" .. i, hudFrame, 65, 26, "L" .. i, function()
-            TriggerHopToLayer(i)
-        end)
-        if lBtn and type(lBtn.SetPoint) == "function" then
-            lBtn:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10 + (col * 70), -114 - (row * 30))
+    layerListFrame = _G.CreateFrame("Frame", "ULOStatusHUDLayerList", hudFrame)
+    layerListFrame:SetSize(276, 130)
+    layerListFrame:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -114)
+    layerListFrame:EnableMouseWheel(true)
+    layerListFrame:SetScript("OnMouseWheel", function(_, delta) StatusHUD.ScrollLayers(-delta) end)
+    local layerRefreshElapsed = 0
+    hudFrame:SetScript("OnUpdate", function(_, delta)
+        layerRefreshElapsed = layerRefreshElapsed + delta
+        if layerRefreshElapsed >= 1 then
+            layerRefreshElapsed = 0
+            StatusHUD.RefreshLayerList()
         end
-        layerHopButtons[i] = lBtn
+    end)
+    layerListBgTex = layerListFrame:CreateTexture(nil, "BACKGROUND")
+    layerListBgTex:SetAllPoints(layerListFrame)
+    AddBorder(layerListFrame, 0.25, 0.62, 0.95, 0.8, 1)
+    for index = 1, LAYER_VISIBLE_ROWS do
+        local row = _G.CreateFrame("Frame", "ULOStatusHUDLayerRow" .. index, layerListFrame)
+        row:SetSize(246, 24)
+        row:SetPoint("TOPLEFT", layerListFrame, "TOPLEFT", 5, -2 - ((index - 1) * 26))
+        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.label:SetPoint("LEFT", row, "LEFT", 2, 0)
+        row.label:SetWidth(60)
+        row.label:SetJustifyH("LEFT")
+        row.info = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.info:SetPoint("LEFT", row, "LEFT", 64, 0)
+        row.info:SetWidth(110)
+        row.info:SetJustifyH("LEFT")
+        row.info:SetWordWrap(false)
+        row.join = CreateStyledButton("ULOStatusHUDLayerRequest" .. index, row, 66, 22, "Request", function()
+            TriggerHopToLayer(row.layer)
+        end, "GameFontNormalSmall")
+        row.join:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+        layerRows[index] = row
     end
+    layerUpButton = CreateStyledButton("ULOStatusHUDLayerUp", layerListFrame, 18, 22, "^", function() StatusHUD.ScrollLayers(-1) end)
+    layerUpButton:SetPoint("TOPRIGHT", layerListFrame, "TOPRIGHT", -3, -2)
+    layerDownButton = CreateStyledButton("ULOStatusHUDLayerDown", layerListFrame, 18, 22, "v", function() StatusHUD.ScrollLayers(1) end)
+    layerDownButton:SetPoint("BOTTOMRIGHT", layerListFrame, "BOTTOMRIGHT", -3, 2)
+    layerRangeFS = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    layerRangeFS:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -248)
 
     -- Primary Interactive Action Buttons
     hopButton = CreateStyledButton("ULOStatusHUDHopButton", hudFrame, 134, 26, "Hop Any", function()
         TriggerHopToLayer(nil)
     end)
     if hopButton and type(hopButton.SetPoint) == "function" then
-        hopButton:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -196)
+        hopButton:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -282)
     end
 
     refreshButton = CreateStyledButton("ULOStatusHUDRefreshButton", hudFrame, 134, 26, "Refresh", function()
@@ -704,7 +757,7 @@ if hudFrame then
         end
     end)
     if refreshButton and type(refreshButton.SetPoint) == "function" then
-        refreshButton:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -10, -196)
+        refreshButton:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -10, -282)
     end
 
     scanButton = CreateStyledButton("ULOStatusHUDScanButton", hudFrame, 134, 26, "Scan NPCs", function()
@@ -728,7 +781,7 @@ if hudFrame then
         StatusHUD.Update()
     end)
     if scanButton and type(scanButton.SetPoint) == "function" then
-        scanButton:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -228)
+        scanButton:SetPoint("TOPLEFT", hudFrame, "TOPLEFT", 10, -314)
     end
 
     autoInvButton = CreateStyledButton("ULOStatusHUDAutoInvButton", hudFrame, 134, 26, "Auto-Inv: ON", function()
@@ -743,7 +796,7 @@ if hudFrame then
         end
     end)
     if autoInvButton and type(autoInvButton.SetPoint) == "function" then
-        autoInvButton:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -10, -228)
+        autoInvButton:SetPoint("TOPRIGHT", hudFrame, "TOPRIGHT", -10, -314)
     end
 
     -- Drag Scripts
@@ -809,6 +862,13 @@ if hudFrame then
 
         -- Persist into saved variables and re-anchor frame
         StatusHUD.SetPosition(finalX, finalY)
+    end)
+
+    -- Escape and native Hide calls must follow the same linked-window behavior.
+    hudFrame:SetScript("OnHide", function()
+        if type(ActionsHUD.IsLinked) == "function" and ActionsHUD.IsLinked() then
+            ActionsHUD.Hide()
+        end
     end)
 end
 
@@ -963,7 +1023,30 @@ function StatusHUD.Hide()
 end
 
 --- Refreshes all HUD sub-elements (status, telemetry, countdown, cooldown, buttons).
+function StatusHUD.ScrollLayers(delta)
+    local maximum = math.max(0, C.KEYWORDS.MAX_LAYER - LAYER_VISIBLE_ROWS)
+    layerOffset = math.max(0, math.min(maximum, layerOffset + math.floor(tonumber(delta) or 0)))
+    StatusHUD.RefreshLayerList()
+end
+
+function StatusHUD.RefreshLayerList()
+    local data = ULO.Intelligence.GetLayerRows()
+    local busy = Coordination.IsAwaitingHop() or Coordination.IsAwaitingLayerVerification()
+    for index, row in ipairs(layerRows) do
+        local entry = data[layerOffset + index]
+        row.layer = entry.layer
+        row.label:SetText("Layer " .. entry.layer)
+        row.info:SetText(entry.current and "Current" or (entry.helpers > 0 and (entry.helpers .. (entry.helpers == 1 and " helper" or " helpers")) or "Unverified"))
+        row.join.textFS:SetText(entry.current and "Current" or "Request")
+        row.join:SetEnabled(not entry.current and not busy)
+    end
+    if layerRangeFS then layerRangeFS:SetText(string.format("%d-%d / %d layers | Scroll to browse", layerOffset + 1, math.min(#data, layerOffset + LAYER_VISIBLE_ROWS), #data)) end
+    if layerUpButton then layerUpButton:SetEnabled(layerOffset > 0) end
+    if layerDownButton then layerDownButton:SetEnabled(layerOffset + LAYER_VISIBLE_ROWS < #data) end
+end
+
 function StatusHUD.Update()
+    StatusHUD.RefreshLayerList()
     if statusTextFS and type(statusTextFS.SetText) == "function" then
         statusTextFS:SetText(StatusHUD.GetStatusText())
     end
@@ -1016,12 +1099,51 @@ end
 -- Live Actions & Telemetry HUD (ULOActionsHUD)
 --------------------------------------------------------------------------------
 
+--- Returns whether Actions is attached to the main window.
+function ActionsHUD.IsLinked()
+    return _G.ULODB ~= nil and _G.ULODB.actionsLinked == true
+end
+
+local function ValidCoordinate(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function HasFreeActionsPosition()
+    local saved = _G.ULODB and _G.ULODB.actionsPosition
+    return type(saved) == "table" and ValidCoordinate(saved.x) and ValidCoordinate(saved.y)
+end
+
+local function SaveFreeActionsPosition()
+    if not actionsFrame or type(actionsFrame.GetLeft) ~= "function" or type(actionsFrame.GetBottom) ~= "function" then
+        return
+    end
+    local okL, left = pcall(actionsFrame.GetLeft, actionsFrame)
+    local okB, bottom = pcall(actionsFrame.GetBottom, actionsFrame)
+    if not okL or not okB or not ValidCoordinate(left) or not ValidCoordinate(bottom) then return end
+    if type(actionsFrame.GetEffectiveScale) == "function" and _G.UIParent
+       and type(_G.UIParent.GetEffectiveScale) == "function" then
+        local okS, scale = pcall(actionsFrame.GetEffectiveScale, actionsFrame)
+        local okP, parentScale = pcall(_G.UIParent.GetEffectiveScale, _G.UIParent)
+        if okS and okP and ValidCoordinate(scale) and ValidCoordinate(parentScale) and scale > 0 and parentScale > 0 then
+            left = left * scale / parentScale
+            bottom = bottom * scale / parentScale
+        end
+    end
+    if not ValidCoordinate(left) or not ValidCoordinate(bottom) then return end
+    _G.ULODB = _G.ULODB or {}
+    _G.ULODB.actionsPosition = { x = math.floor(left + 0.5), y = math.floor(bottom + 0.5) }
+end
+
 local function DockActionsToHUD()
     if not actionsFrame or type(actionsFrame.ClearAllPoints) ~= "function" or type(actionsFrame.SetPoint) ~= "function" then
         return
     end
-    local saved = _G.ULODB and _G.ULODB.actionsPosition
-    if type(saved) == "table" and type(saved.x) == "number" and type(saved.y) == "number" then
+    local linked = ActionsHUD.IsLinked()
+    if type(actionsFrame.SetMovable) == "function" then
+        actionsFrame:SetMovable(not linked)
+    end
+    if not linked and HasFreeActionsPosition() then
+        local saved = _G.ULODB.actionsPosition
         actionsFrame:ClearAllPoints()
         actionsFrame:SetPoint("BOTTOMLEFT", _G.UIParent, "BOTTOMLEFT", saved.x, saved.y)
         return
@@ -1039,7 +1161,12 @@ local function DockActionsToHUD()
     end
 
     actionsFrame:ClearAllPoints()
-    if dockLeft then
+    if not linked then
+        -- A free window must not retain a relative anchor to the main window.
+        local x, y = StatusHUD.GetPosition()
+        x = dockLeft and (x - ACTIONS_WIDTH - 8) or (x + HUD_WIDTH + 8)
+        actionsFrame:SetPoint("BOTTOMLEFT", _G.UIParent, "BOTTOMLEFT", math.max(0, x), y)
+    elseif dockLeft then
         actionsFrame:SetPoint("TOPRIGHT", hudFrame, "TOPLEFT", -8, 0)
     else
         actionsFrame:SetPoint("TOPLEFT", hudFrame, "TOPRIGHT", 8, 0)
@@ -1157,8 +1284,6 @@ if actionsFrame then
     end
 
     local aCloseBtn = CreateStyledButton("ULOActionsHUDCloseButton", actionsFrame, 18, 18, "X", function()
-        _G.ULODB = _G.ULODB or {}
-        _G.ULODB.showActionsHUD = false
         ActionsHUD.Hide()
     end, "GameFontNormalSmall")
     if aCloseBtn and type(aCloseBtn.SetPoint) == "function" then
@@ -1172,8 +1297,8 @@ if actionsFrame then
         aClearBtn:SetPoint("RIGHT", aCloseBtn or actionsFrame, "LEFT", -3, 0)
     end
 
-    actionsModeButton = CreateStyledButton("ULOActionsHUDModeButton", actionsFrame, 68, 18, "Mode: All", function()
-        ULO.SetULOOnlyMode(not ULO.IsULOOnlyMode())
+    actionsModeButton = CreateStyledButton("ULOActionsHUDModeButton", actionsFrame, 68, 18, "Mode v", function()
+        ActionsHUD.ToggleModeMenu()
     end, "GameFontNormalSmall")
     if actionsModeButton and type(actionsModeButton.SetPoint) == "function" then
         actionsModeButton:SetPoint("RIGHT", aClearBtn or actionsFrame, "LEFT", -3, 0)
@@ -1186,24 +1311,30 @@ if actionsFrame then
         actionsThemeButton:SetPoint("RIGHT", actionsModeButton or actionsFrame, "LEFT", -3, 0)
     end
 
+    actionsLinkButton = CreateStyledButton("ULOActionsHUDLinkButton", actionsFrame, 48, 18, "Free", function()
+        ActionsHUD.SetLinked(not ActionsHUD.IsLinked())
+    end, "GameFontNormalSmall")
+    if actionsLinkButton and type(actionsLinkButton.SetPoint) == "function" then
+        actionsLinkButton:SetPoint("RIGHT", actionsThemeButton or actionsFrame, "LEFT", -3, 0)
+    end
+
     actionsFrame:SetScript("OnDragStart", function(self)
+        if ActionsHUD.IsLinked() then return end
         if type(self.StartMoving) == "function" then
             self:StartMoving()
         end
+    end)
+
+    actionsFrame:SetScript("OnHide", function()
+        if modeDropdownFrame then modeDropdownFrame:Hide() end
     end)
 
     actionsFrame:SetScript("OnDragStop", function(self)
         if type(self.StopMovingOrSizing) == "function" then
             self:StopMovingOrSizing()
         end
-        if type(self.GetLeft) == "function" and type(self.GetBottom) == "function" then
-            local okL, left = pcall(self.GetLeft, self)
-            local okB, bottom = pcall(self.GetBottom, self)
-            if okL and okB and type(left) == "number" and type(bottom) == "number" then
-                _G.ULODB = _G.ULODB or {}
-                _G.ULODB.actionsPosition = { x = math.floor(left + 0.5), y = math.floor(bottom + 0.5) }
-            end
-        end
+        if ActionsHUD.IsLinked() then return end
+        SaveFreeActionsPosition()
     end)
 
     local tickAcc = 0
@@ -1224,6 +1355,65 @@ function ActionsHUD.GetFrame()
     return actionsFrame
 end
 
+function ActionsHUD.RefreshModeMenu()
+    for id, button in pairs(modeTrackButtons) do button:SetChecked(ULO.IsTrackEnabled(id)) end
+end
+
+--- Opens a multi-select menu; checking a source never changes another source.
+function ActionsHUD.ToggleModeMenu()
+    if not actionsFrame or type(_G.CreateFrame) ~= "function" then return end
+    if not modeDropdownFrame then
+        modeDropdownFrame = _G.CreateFrame("Frame", "ULOActionsModeDropdown", actionsFrame)
+        modeDropdownFrame:SetSize(190, #ULO.RequestTracks * 22 + 12)
+        modeDropdownFrame:SetPoint("TOPRIGHT", actionsModeButton, "BOTTOMRIGHT", 0, -3)
+        modeDropdownFrame:SetFrameStrata("TOOLTIP")
+        modeDropdownFrame:SetClampedToScreen(true)
+        modeDropdownFrame:EnableMouse(true)
+        modeDropdownBgTex = modeDropdownFrame:CreateTexture(nil, "BACKGROUND")
+        modeDropdownBgTex:SetAllPoints(modeDropdownFrame)
+        AddBorder(modeDropdownFrame, 0.25, 0.62, 0.95, 1, 1)
+        RegisterSpecialFrame("ULOActionsModeDropdown")
+        for index, track in ipairs(ULO.RequestTracks) do
+            local id = track.id
+            local button = _G.CreateFrame("CheckButton", "ULOActionsModeTrack_" .. id, modeDropdownFrame, "UICheckButtonTemplate")
+            button:SetSize(22, 22)
+            button:SetPoint("TOPLEFT", modeDropdownFrame, "TOPLEFT", 6, -6 - ((index - 1) * 22))
+            local label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            label:SetPoint("LEFT", button, "RIGHT", 0, 0)
+            label:SetText(track.label)
+            button:SetScript("OnClick", function(self) ULO.SetTrackEnabled(id, self:GetChecked()) end)
+            modeTrackButtons[id] = button
+        end
+        modeDropdownFrame:Hide()
+        StatusHUD.ApplyTheme()
+    end
+    if modeDropdownFrame:IsShown() then
+        modeDropdownFrame:Hide()
+    else
+        ActionsHUD.RefreshModeMenu()
+        modeDropdownFrame:Show()
+    end
+end
+
+--- Attaches Actions to the main window or restores its independent position.
+function ActionsHUD.SetLinked(linked)
+    linked = linked == true
+    if ActionsHUD.IsLinked() and not linked and not HasFreeActionsPosition() then
+        SaveFreeActionsPosition()
+    end
+    _G.ULODB = _G.ULODB or {}
+    _G.ULODB.actionsLinked = linked
+    if actionsFrame and type(actionsFrame.StopMovingOrSizing) == "function" then
+        actionsFrame:StopMovingOrSizing()
+    end
+    if linked and actionsFrame and actionsFrame:IsShown() then
+        StatusHUD.Show()
+    end
+    DockActionsToHUD()
+    ActionsHUD.Update()
+    return linked
+end
+
 --- Clears the rolling action log and refreshes the display.
 function ActionsHUD.Clear()
     ULO.actionLog = {}
@@ -1233,7 +1423,10 @@ end
 --- Shows the Actions HUD and updates telemetry.
 function ActionsHUD.Show()
     if actionsFrame and type(actionsFrame.Show) == "function" then
+        if ActionsHUD.IsLinked() then StatusHUD.Show() end
         DockActionsToHUD()
+        _G.ULODB = _G.ULODB or {}
+        _G.ULODB.showActionsHUD = true
         actionsFrame:Show()
         ActionsHUD.Update()
     end
@@ -1241,20 +1434,19 @@ end
 
 --- Hides the Actions HUD.
 function ActionsHUD.Hide()
+    _G.ULODB = _G.ULODB or {}
+    _G.ULODB.showActionsHUD = false
     if actionsFrame and type(actionsFrame.Hide) == "function" then
         actionsFrame:Hide()
     end
 end
 
---- Toggles Actions HUD visibility and persists preference.
+--- Toggles Actions HUD visibility for the current session.
 function ActionsHUD.Toggle()
     if not actionsFrame then return end
-    _G.ULODB = _G.ULODB or {}
     if type(actionsFrame.IsShown) == "function" and actionsFrame:IsShown() then
-        _G.ULODB.showActionsHUD = false
         ActionsHUD.Hide()
     else
-        _G.ULODB.showActionsHUD = true
         ActionsHUD.Show()
     end
 end
@@ -1305,14 +1497,22 @@ function ActionsHUD.Update()
         end
     end
 
-    local modeLabel = uloOnly and "|cff00ffffULO ONLY|r" or "|cff88ff88ALL ADDONS|r"
+    local enabledTracks = 0
+    for _, track in ipairs(ULO.RequestTracks) do
+        if ULO.IsTrackEnabled(track.id) then enabledTracks = enabledTracks + 1 end
+    end
+    local modeLabel = string.format("%d/%d tracks", enabledTracks, #ULO.RequestTracks)
     if telemetryNetFS and type(telemetryNetFS.SetText) == "function" then
         telemetryNetFS:SetText(string.format("Mode: %s | AL:%s OV:%s | Chan:%s",
             modeLabel, alOn and "ON" or "OFF", ovOn and "ON" or "OFF", chStr))
     end
 
     if actionsModeButton and actionsModeButton.textFS and type(actionsModeButton.textFS.SetText) == "function" then
-        actionsModeButton.textFS:SetText(uloOnly and "Mode: ULO" or "Mode: All")
+        actionsModeButton.textFS:SetText("Mode: " .. enabledTracks .. " v")
+    end
+    ActionsHUD.RefreshModeMenu()
+    if actionsLinkButton and actionsLinkButton.textFS and type(actionsLinkButton.textFS.SetText) == "function" then
+        actionsLinkButton.textFS:SetText(ActionsHUD.IsLinked() and "Linked" or "Free")
     end
 
     local totalPeers, otherHelpers, dirPeers = 0, 0, 0
@@ -1356,6 +1556,11 @@ if type(_G.CreateFrame) == "function" then
         evtFrame:SetScript("OnEvent", function(self, event)
             if event == "PLAYER_ENTERING_WORLD" then
                 _G.ULODB = _G.ULODB or {}
+                -- Reset visibility once per login/reload, never on later zone entries.
+                if not hasEnteredWorld then
+                    hasEnteredWorld = true
+                    ActionsHUD.Hide()
+                end
                 if not _G.ULODB.hudLayoutV2 then
                     _G.ULODB.hudPosition = { x = DEFAULT_POS_X, y = DEFAULT_POS_Y }
                     _G.ULODB.hudLayoutV2 = true
@@ -1365,26 +1570,18 @@ if type(_G.CreateFrame) == "function" then
                 StatusHUD.ApplyTheme()
                 if ULO.Interop and ULO.Interop.Overlord and type(ULO.Interop.Overlord.SyncHelpMode) == "function" then
                     ULO.Interop.Overlord.SyncHelpMode()
-                elseif ULO.IsULOOnlyMode() and _G.Overlord and _G.Overlord.LayerJumper and type(_G.Overlord.LayerJumper.SetHelpMode) == "function" then
-                    pcall(_G.Overlord.LayerJumper.SetHelpMode, _G.Overlord.LayerJumper, "off")
                 end
                 if ULO.Coordination and type(ULO.Coordination.SyncLeatrixPlusGuard) == "function" then
                     ULO.Coordination.SyncLeatrixPlusGuard()
                 end
                 if #ULO.GetActionLog() == 0 then
-                    ULO.LogAction("Core", "Ready: click L1-L8, Hop Any, or Scan NPCs")
+                    ULO.LogAction("Core", "Ready: browse layers, Hop Any, or Scan NPCs")
                 end
                 if (type(_G.ULO_CONFIG) == "table" and type(_G.ULO_CONFIG.ui) == "table" and _G.ULO_CONFIG.ui.showStatusHUD == false)
                    or _G.ULODB.showStatusHUD == false then
                     StatusHUD.Hide()
-                    ActionsHUD.Hide()
                 else
                     StatusHUD.Update()
-                    if _G.ULODB.showActionsHUD == false then
-                        ActionsHUD.Hide()
-                    else
-                        ActionsHUD.Show()
-                    end
                 end
             end
         end)
@@ -1394,6 +1591,8 @@ end
 -- Apply initial anchor and theme
 StatusHUD.SetPosition(StatusHUD.GetPosition())
 StatusHUD.ApplyTheme()
+StatusHUD.RefreshLayerList()
+ActionsHUD.Hide()
 
 -- Subscribe to ULO Callbacks for automatic HUD & Action Log refreshing
 if ULO.RegisterCallback then

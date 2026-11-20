@@ -930,6 +930,7 @@ function SettingsPanel:Initialize()
         "Participate in the shared AutoLayer / NetherAutoLayer cross-addon channel network.",
         initAutoLayer,
         function(checked)
+            if ULO.SetTrackEnabled then return ULO.SetTrackEnabled("autoLayer", checked) end
             _G.ULODB = _G.ULODB or {}
             _G.ULODB.autoLayerEnabled = checked
             _G.ULO_CONFIG = _G.ULO_CONFIG or {}
@@ -962,6 +963,7 @@ function SettingsPanel:Initialize()
         "Respond to Overlord layer request tokens transmitted via hidden addon whispers.",
         initOverlord,
         function(checked)
+            if ULO.SetTrackEnabled then return ULO.SetTrackEnabled("overlord", checked) end
             _G.ULODB = _G.ULODB or {}
             _G.ULODB.overlordEnabled = checked
             _G.ULO_CONFIG = _G.ULO_CONFIG or {}
@@ -997,6 +999,7 @@ function SettingsPanel:Initialize()
         "Publish current layer index to NovaWorldBuffs global variables and event handlers.",
         initNWBSync,
         function(checked)
+            if ULO.SetTrackEnabled then return ULO.SetTrackEnabled("nwb", checked) end
             _G.ULODB = _G.ULODB or {}
             _G.ULODB.nwbSync = checked
             _G.ULO_CONFIG = _G.ULO_CONFIG or {}

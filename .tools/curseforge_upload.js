@@ -2,97 +2,56 @@
 
 const fs = require('fs');
 const path = require('path');
-const { buildCurseForgeMetadata } = require('./curseforge_deployment');
-
-const CURSEFORGE_API_BASE = 'https://classic.curseforge.com/api';
+const crypto = require('crypto');
+const { buildCurseForgeMetadata, resolveRelease, readGameVersionNames, selectGameVersions } = require('./curseforge_deployment');
+const API_BASE = 'https://wow.curseforge.com/api';
 
 function parseArgs(argv) {
   const args = {};
-  for (let i = 2; i < argv.length; i++) {
-    const token = argv[i];
-    if (token.startsWith('--')) {
-      const key = token.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        args[key] = next;
-        i += 1;
-      } else {
-        args[key] = 'true';
-      }
-    }
+  for (let i = 0; i < argv.length; i += 2) {
+    if (!/^--[a-z-]+$/.test(argv[i]) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Every upload option requires a value.');
+    args[argv[i].slice(2)] = argv[i + 1];
   }
   return args;
 }
 
-async function fetchGameVersionIds(token) {
-  const res = await fetch(`${CURSEFORGE_API_BASE}/game/versions`, {
-    headers: { 'X-Api-Token': token },
-  });
-  if (!res.ok) {
-    throw new Error(`CurseForge game versions query failed (${res.status}): ${await res.text()}`);
+async function upload(args, { env = process.env, fetchImpl = fetch, repoRoot = path.resolve(__dirname, '..'), log = console.log } = {}) {
+  const projectId = String(args['project-id'] || env.CURSEFORGE_PROJECT_ID || '');
+  const token = (env.CURSEFORGE_API_TOKEN || '').trim();
+  if (!/^\d+$/.test(projectId) || !token) throw new Error('CURSEFORGE_PROJECT_ID and CURSEFORGE_API_TOKEN must be configured.');
+  const { version, channel } = resolveRelease({ tag: `v${args.version || ''}`, channel: args.channel || 'beta' });
+  if (!args.file || !fs.existsSync(args.file)) throw new Error('Release ZIP is missing.');
+  const bytes = fs.readFileSync(args.file);
+  if (bytes.subarray(0, 4).toString('hex') !== '504b0304') throw new Error('Release file is not a ZIP archive.');
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (args.receipt && fs.existsSync(args.receipt)) {
+    const receipt = JSON.parse(fs.readFileSync(args.receipt, 'utf8').replace(/^\uFEFF/, ''));
+    if (receipt.projectId !== projectId || receipt.version !== version || receipt.sha256 !== sha256 || !Number.isInteger(receipt.id) || receipt.id < 1) throw new Error('Existing CurseForge receipt does not match this release.');
+    log(`CurseForge file ${receipt.id} already records this exact archive; skipping duplicate upload.`);
+    return receipt;
   }
-  const list = await res.json();
-  const wanted = new Set(['1.15.9', '2.5.6', '5.5.4', '12.0.1', '12.1.5']);
-  const ids = list.filter((v) => wanted.has(v.name)).map((v) => v.id);
-  if (ids.length > 0) return ids;
-
-  // Fallback to latest matching non-empty version entries if exact patch strings are absent
-  return list.slice(-5).map((v) => v.id);
-}
-
-async function main() {
-  const args = parseArgs(process.argv);
-  const projectId = args['project-id'] || process.env.CURSEFORGE_PROJECT_ID;
-  const token = process.env.CURSEFORGE_API_TOKEN;
-  const filePath = args.file;
-  const version = args.version;
-  const channel = args.channel || 'beta';
-  const notesPath = args.notes;
-
-  if (!projectId || !token) {
-    throw new Error('CURSEFORGE_PROJECT_ID and CURSEFORGE_API_TOKEN must be configured.');
-  }
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error(`Archive file not found: ${filePath}`);
-  }
-  if (!version) {
-    throw new Error('Missing --version argument.');
-  }
-
-  const changelog = notesPath && fs.existsSync(notesPath)
-    ? fs.readFileSync(notesPath, 'utf8')
-    : `Release v${version}`;
-
-  const gameVersions = await fetchGameVersionIds(token);
-  const metadata = buildCurseForgeMetadata({
-    version,
-    releaseType: channel === 'stable' ? 'release' : 'beta',
-    changelog,
-    gameVersions,
-  });
-
+  const response = await fetchImpl(`${API_BASE}/game/versions`, { headers: { 'X-Api-Token': token }, redirect: 'error', signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error(`CurseForge game versions request failed (HTTP ${response.status}).`);
+  const selected = selectGameVersions(await response.json(), readGameVersionNames(repoRoot));
+  if (selected.missing.length) throw new Error(`CurseForge lacks declared versions: ${selected.missing.join(', ')}. Update support metadata explicitly before publishing.`);
+  const changelog = args.notes ? fs.readFileSync(args.notes, 'utf8') : `Release v${version}`;
+  const metadata = buildCurseForgeMetadata({ version, releaseType: channel === 'stable' ? 'release' : 'beta', changelog, gameVersions: selected.ids });
   const form = new FormData();
   form.append('metadata', JSON.stringify(metadata));
-  const buffer = fs.readFileSync(filePath);
-  const blob = new Blob([buffer], { type: 'application/zip' });
-  form.append('file', blob, path.basename(filePath));
-
-  const uploadUrl = `${CURSEFORGE_API_BASE}/projects/${projectId}/upload-file`;
-  const res = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: { 'X-Api-Token': token },
-    body: form,
-  });
-
-  if (!res.ok) {
-    throw new Error(`CurseForge upload failed (${res.status}): ${await res.text()}`);
+  form.append('file', new Blob([bytes], { type: 'application/zip' }), path.basename(args.file));
+  log(`Uploading ULO v${version} (${channel}) for ${selected.matched.join(', ')}.`);
+  const res = await fetchImpl(`${API_BASE}/projects/${projectId}/upload-file`, { method: 'POST', headers: { 'X-Api-Token': token }, body: form, redirect: 'error', signal: AbortSignal.timeout(120000) });
+  if (!res.ok) throw new Error(`CurseForge upload failed (HTTP ${res.status}).`);
+  const result = await res.json();
+  if (!Number.isInteger(result.id) || result.id < 1) throw new Error('CurseForge did not return a valid file ID.');
+  const receipt = { id: result.id, projectId, version, sha256, gameVersions: selected.ids };
+  if (args.receipt) {
+    fs.mkdirSync(path.dirname(args.receipt), { recursive: true });
+    fs.writeFileSync(args.receipt, JSON.stringify(receipt, null, 2) + '\n');
   }
-
-  const json = await res.json();
-  console.log('CurseForge upload succeeded:', JSON.stringify(json));
+  log(`CurseForge accepted file ${result.id}; moderation may still be pending.`);
+  return receipt;
 }
 
-main().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+if (require.main === module) upload(parseArgs(process.argv.slice(2))).catch(err => { console.error(err.message); process.exitCode = 1; });
+module.exports = { parseArgs, upload };

@@ -104,6 +104,78 @@ function ULO.RegisterCallback(eventName, handler)
     end
 end
 
+-- Independent request sources. Existing flat settings remain authoritative so
+-- the Actions menu and Settings checkboxes always read the same preferences.
+ULO.RequestTracks = {
+    { id = "ulo", label = "ULO", flag = "uloEnabled" },
+    { id = "autoLayer", label = "AutoLayer", flag = "autoLayerEnabled" },
+    { id = "overlord", label = "Overlord", flag = "overlordEnabled" },
+    { id = "nwb", label = "NovaWorldBuffs sync", flag = "nwbSync" },
+    { id = "guild", label = "Guild chat", flag = "guildInviteEnabled" },
+    { id = "tresLayerSwap", label = "TresLayerSwap", flag = "tresLayerSwapEnabled" },
+    { id = "layerHopper", label = "LayerHopper", flag = "layerHopperEnabled" },
+    { id = "directWhisper", label = "Direct whispers", flag = "directWhisperEnabled" },
+}
+
+local function FindRequestTrack(id)
+    for _, track in ipairs(ULO.RequestTracks) do
+        if track.id == id then return track end
+    end
+end
+
+function ULO.IsTrackEnabled(id)
+    local track = FindRequestTrack(id)
+    if not track then return false end
+    local db = type(_G.ULODB) == "table" and _G.ULODB or {}
+    local cfg = type(_G.ULO_CONFIG) == "table" and _G.ULO_CONFIG.interop or {}
+    cfg = type(cfg) == "table" and cfg or {}
+    if db.uloOnlyMode and (id == "autoLayer" or id == "overlord" or id == "tresLayerSwap" or id == "layerHopper") then
+        return false
+    end
+    if db[track.flag] == false or cfg[track.flag] == false then return false end
+    if id == "autoLayer" and cfg.autolayerEnabled == false then return false end
+    if id == "nwb" and (db.nwbEnabled == false or cfg.nwbEnabled == false) then return false end
+    return true
+end
+
+function ULO.SetTrackEnabled(id, enabled)
+    local track = FindRequestTrack(id)
+    if not track then return false end
+    _G.ULODB = _G.ULODB or {}
+    _G.ULO_CONFIG = _G.ULO_CONFIG or {}
+    _G.ULO_CONFIG.interop = _G.ULO_CONFIG.interop or {}
+    -- Preserve the effective choices when upgrading an old ULO-only profile.
+    if _G.ULODB.uloOnlyMode then
+        for _, legacy in ipairs({ "autoLayer", "overlord", "tresLayerSwap", "layerHopper" }) do
+            local oldTrack = FindRequestTrack(legacy)
+            _G.ULODB[oldTrack.flag] = false
+            _G.ULO_CONFIG.interop[oldTrack.flag] = false
+        end
+        _G.ULODB.uloOnlyMode = false
+    end
+    local flag = enabled == true
+    _G.ULODB[track.flag] = flag
+    _G.ULO_CONFIG.interop[track.flag] = flag
+    if id == "autoLayer" then _G.ULO_CONFIG.interop.autolayerEnabled = flag end
+    if id == "nwb" then
+        _G.ULODB.nwbEnabled = flag
+        _G.ULO_CONFIG.interop.nwbEnabled = flag
+    end
+    if ULO.config then ULO.config.interop = _G.ULO_CONFIG.interop end
+    if id == "guild" and ULO.Coordination and ULO.Coordination.SetGuildInviteEnabled then
+        ULO.Coordination.SetGuildInviteEnabled(flag)
+    end
+    if ULO.Interop and ULO.Interop.Overlord and ULO.Interop.Overlord.SyncHelpMode then
+        ULO.Interop.Overlord.SyncHelpMode()
+    end
+    if ULO.Coordination and ULO.Coordination.SyncLeatrixPlusGuard then ULO.Coordination.SyncLeatrixPlusGuard() end
+    if ULO.LogAction then ULO.LogAction("Mode", track.label .. (flag and " enabled" or " disabled")) end
+    if ULO.TriggerCallback then ULO.TriggerCallback("OnConfigChanged", "requestTrack", id, flag) end
+    if ULO.UI and ULO.UI.StatusHUD then ULO.UI.StatusHUD.Update() end
+    if ULO.UI and ULO.UI.SettingsPanel and ULO.UI.SettingsPanel.RefreshControls then ULO.UI.SettingsPanel.RefreshControls() end
+    return flag
+end
+
 --- Unregisters a previously registered callback handler.
 -- @param eventName string: Callback event identifier
 -- @param handler function: Function to remove

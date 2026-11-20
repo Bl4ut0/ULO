@@ -100,7 +100,8 @@ function Detection.VoteLayer(serverId, guid)
         layerConfidence = "CONFIRMED"
 
         -- Synchronize with NovaWorldBuffs if present
-        if not isSyncingNWB and (_G.NWB_CurrentLayer ~= currentLayer or _G.NWB_CurrentLayerZoneID ~= currentZoneId) then
+        if (not ULO.IsTrackEnabled or ULO.IsTrackEnabled("nwb")) and not isSyncingNWB
+           and (_G.NWB_CurrentLayer ~= currentLayer or _G.NWB_CurrentLayerZoneID ~= currentZoneId) then
             isSyncingNWB = true
             _G.NWB_CurrentLayer = currentLayer
             _G.NWB_CurrentLayerZoneID = currentZoneId
@@ -379,7 +380,7 @@ if type(_G.CreateFrame) == "function" then
 end
 
 -- Seed initial layer from NWB if available
-if _G.NWB_CurrentLayer then
+if (not ULO.IsTrackEnabled or ULO.IsTrackEnabled("nwb")) and _G.NWB_CurrentLayer then
     local seed = tonumber(_G.NWB_CurrentLayer) or tonumber(string.match(tostring(_G.NWB_CurrentLayer), "(%d+)"))
     if seed then
         currentLayer = seed
@@ -388,7 +389,7 @@ if _G.NWB_CurrentLayer then
 end
 
 function Detection:Initialize()
-    if _G.NWB_CurrentLayer then
+    if (not ULO.IsTrackEnabled or ULO.IsTrackEnabled("nwb")) and _G.NWB_CurrentLayer then
         local seed = tonumber(_G.NWB_CurrentLayer) or tonumber(string.match(tostring(_G.NWB_CurrentLayer), "(%d+)"))
         if seed then
             currentLayer = seed
