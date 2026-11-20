@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [v1.0.1-beta.1] - 2026-11-20
 ### Added
 - CurseForge publishing from GitHub releases, with full validation, verified artwork in release ZIPs, explicit game-version metadata and saved upload receipts.
 - Replaced the eight layer buttons with a scrollable layer list and per-row Request controls. The current layer is disabled; fresh eligible helper counts are shown where available. The list covers the supported 1–20 range without claiming that every layer is populated.
