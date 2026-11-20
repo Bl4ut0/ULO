@@ -53,7 +53,7 @@ if ($UseExisting) {
     if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $checksum[0]) { throw 'Existing release ZIP checksum mismatch.' }
 } else {
     # Archive the commit with a pathspec so commit timestamps are retained.
-    & git -C $RepoRoot -c core.autocrlf=false archive --format=zip --output="$zipPath" $commitSha ULO
+    & git -C $RepoRoot -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$zipPath" $commitSha ULO
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zipPath)) { throw "git archive failed for $commitSha." }
 }
 
